@@ -34,7 +34,9 @@ finish-args:
   - --talk-name=org.gnome.Calendar
   - --talk-name=org.gnome.Contacts
   - --talk-name=org.gnome.NautilusPreviewer
-  - --filesystem=~/.cache/evolution:ro
+  # Camel mail summaries live in the sandbox home (~/.var/app/…/cache).
+  # Do not mount the host ~/.cache/evolution: that tree is the deb install’s
+  # partial Archive and a :ro mount cannot commit a finished delta.
   - --filesystem=xdg-download:rw
   - --filesystem=/tmp
   - --metadata=X-DConf=migrate-path=/io/github/stalvatero/Letter/
@@ -170,6 +172,9 @@ modules:
       - type: archive
         url: https://download.gnome.org/sources/evolution-ews/3.58/evolution-ews-3.58.3.tar.xz
         sha256: 3f6ef8bb6389013e843e258ce1dc317a891a34f87d79780c9aef04d2741abc92
+      # Failed/cancelled Graph delta must not save a partial folder summary.
+      - type: patch
+        path: patches/evolution-ews-m365-refresh-commit-on-success.patch
     # Drop Evolution UI leftovers now that Graph/EWS providers are installed.
     cleanup:
       - /bin

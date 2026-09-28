@@ -1,5 +1,6 @@
 public class Mail.SearchField : Gtk.Widget {
     public signal void query_changed ();
+    public signal void activated ();
     public signal void stopped ();
 
     private Gtk.Box bar;
@@ -302,12 +303,19 @@ public class Mail.SearchField : Gtk.Widget {
     }
 
     private void on_activate () {
-        if (suggest_is_open ()) {
+        submit_query ();
+    }
+
+    /* Enter must always submit: with the suggest popover open the key controller
+     * used to apply a chip and swallow the event, so search never started. */
+    private void submit_query () {
+        if (suggest_is_open ())
             apply_selected_suggest ();
-            return;
-        }
-        commit_operators (true);
+        else
+            commit_operators (true);
         hide_suggest ();
+        if (!query ().is_empty)
+            activated ();
     }
 
     private void on_input_text () {
@@ -345,8 +353,9 @@ public class Mail.SearchField : Gtk.Widget {
             move_suggest (-1);
             return true;
         }
-        if ((keyval == Gdk.Key.Return || keyval == Gdk.Key.KP_Enter) && suggest_is_open ()) {
-            apply_selected_suggest ();
+        if (keyval == Gdk.Key.Return || keyval == Gdk.Key.KP_Enter) {
+            /* Consume Enter so Gtk.Text.activate does not double-submit. */
+            submit_query ();
             return true;
         }
         if (keyval == Gdk.Key.Tab && suggest_is_open () && (mods & Gdk.ModifierType.SHIFT_MASK) == 0) {
@@ -383,6 +392,8 @@ public class Mail.SearchField : Gtk.Widget {
         this.suppressing = false;
         sync_chrome ();
         query_changed ();
+        /* Space → pill: run search immediately (Enter still works for bare text). */
+        emit_chip_search ();
     }
 
     private void add_chip (SearchClause clause, bool notify) {
@@ -449,7 +460,14 @@ public class Mail.SearchField : Gtk.Widget {
         if (notify) {
             this.input.grab_focus ();
             query_changed ();
+            emit_chip_search ();
         }
+    }
+
+    private void emit_chip_search () {
+        if (query ().is_empty)
+            return;
+        activated ();
     }
 
     private void queue_suggest (bool immediate = false) {
@@ -650,6 +668,7 @@ public class Mail.SearchField : Gtk.Widget {
             folded = item.folded,
         }, true);
         this.input.grab_focus ();
+        emit_chip_search ();
     }
 
     private void drop_last_token () {

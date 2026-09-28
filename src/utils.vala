@@ -70,6 +70,42 @@ namespace Mail.Utils {
         return system_memory_total_bytes () / 20;
     }
 
+    /* Deep-sync / cache-fill soft RSS ceiling: min(2 GiB, 20% of RAM). */
+    public static size_t process_rss_soft_ceiling_bytes () {
+        var fifth = system_memory_total_bytes () / 5;
+        var two_gib = 2UL * 1024UL * 1024UL * 1024UL;
+        return fifth < two_gib ? fifth : two_gib;
+    }
+
+    public static size_t process_rss_bytes () {
+        string contents;
+        try {
+            FileUtils.get_contents ("/proc/self/status", out contents);
+        } catch (Error e) {
+            return 0;
+        }
+        foreach (var line in contents.split ("\n")) {
+            if (!line.has_prefix ("VmRSS:"))
+                continue;
+            var parts = line.split_set (" \t", 0);
+            foreach (var part in parts) {
+                if (part.length == 0 || part == "VmRSS:" || part.down () == "kb")
+                    continue;
+                var kb = uint64.parse (part);
+                if (kb > 0)
+                    return (size_t) (kb * 1024UL);
+            }
+        }
+        return 0;
+    }
+
+    public static bool process_rss_above_soft_ceiling () {
+        var rss = process_rss_bytes ();
+        if (rss == 0)
+            return false;
+        return rss > process_rss_soft_ceiling_bytes ();
+    }
+
     public static bool focus_is_text_input (Gtk.Window window) {
         var widget = window.get_focus ();
         while (widget != null) {
@@ -697,6 +733,55 @@ namespace Mail.Utils {
             "camel-providers",
             "libcamelmicrosoft365.so"
         );
+    }
+
+    /* evolution-ews 3.58+ maps Graph flagStatus → Camel user tag "follow-up"
+     * (I#314). Ubuntu 3.56 still ships a provider that never sets that tag, so
+     * Letter bookmarks stay empty on a fresh host install even when Outlook
+     * Flags exist. Flatpak bundles 3.58.3. Probe the camel provider binary for
+     * the tag string the fixed update path embeds. */
+    public static bool microsoft365_maps_outlook_followup () {
+        foreach (unowned string root in eds_library_roots ()) {
+            var path = Path.build_filename (
+                root,
+                "evolution-data-server",
+                "camel-providers",
+                "libcamelmicrosoft365.so"
+            );
+            if (!FileUtils.test (path, FileTest.IS_REGULAR))
+                continue;
+            if (file_contains_ascii (path, "follow-up"))
+                return true;
+        }
+        return false;
+    }
+
+    private static bool file_contains_ascii (string path, string needle) {
+        if (needle.length == 0)
+            return false;
+        uint8[] data;
+        try {
+            FileUtils.get_data (path, out data);
+        } catch (Error e) {
+            debug ("Could not read %s: %s", path, e.message);
+            return false;
+        }
+        var n = needle.data;
+        if (data.length < n.length)
+            return false;
+        var last = data.length - n.length;
+        for (int i = 0; i <= last; i++) {
+            bool match = true;
+            for (int j = 0; j < n.length; j++) {
+                if (data[i + j] != n[j]) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match)
+                return true;
+        }
+        return false;
     }
 
     /* Host EDS loads Graph backends when evolution-ews is installed. Inside

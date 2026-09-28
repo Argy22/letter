@@ -13,6 +13,8 @@ public class Mail.MailSession : Camel.Session {
     private Camel.Service? authenticating_service;
     private string? authenticating_mechanism;
     private HashTable<string, MessageContent> body_cache;
+    private HashTable<string, int64?> body_cache_touched;
+    private string? pinned_body_key;
     private GenericArray<FlagFlushJob> flag_flush_queue;
     private HashTable<string, FlagFlushJob> flag_flush_latest;
     private bool flag_flush_running;
@@ -29,12 +31,19 @@ public class Mail.MailSession : Camel.Session {
     private Cancellable? flag_op_cancellable;
     private HashTable<string, FolderWatch> folder_watches;
     private HashTable<string, int> prefetch_cursor;
+    /* Prefetch bodies that exceeded the per-message timeout. Kept for the
+     * session so one stuck MIME cannot pin the cursor. Opening that message
+     * still fetches it on demand. */
+    private HashTable<string, uint8> prefetch_body_skipped;
+    private BodyTextIndex body_text_index;
     /* M365 accounts whose Camel folder-tree already has TYPE_TRASH/JUNK. */
     private HashTable<string, bool> m365_folder_types_ok;
     private bool camel_busy;
     private int high_refresh_waiters;
     /* Outbound send must preempt archive/move flush — open-body must not. */
     private int send_waiters;
+    /* In-flight folder refresh_info — never steal Camel (shreds Online Archive). */
+    private int graph_refresh_holders;
     /* Bumped when a priority waiter steals a stuck Camel lock so the old
      * holder's leave_camel does not clear the new owner's busy flag. */
     private uint camel_epoch;
@@ -45,6 +54,12 @@ public class Mail.MailSession : Camel.Session {
     public delegate void QueuedMoveHideFunc (Account account, Folder from, string uid);
 
     public const uint PREFETCH_NETWORK_CHUNK = 12;
+    /* Newest-first tip window for bulk body download; scroll extends. */
+    public const uint BODY_PREFETCH_TIP = 1500;
+    public const uint BODY_PREFETCH_SCROLL_STEP = 500;
+    /* RAM scratch for opened bodies — disk Camel cache is the durable store. */
+    public const uint BODY_CACHE_MAX_ENTRIES = 32;
+    public const size_t BODY_CACHE_CEILING_BYTES = 64UL * 1024UL * 1024UL;
 
     public bool header_sync_busy {
         get {
@@ -97,12 +112,15 @@ public class Mail.MailSession : Camel.Session {
         this.prompter.auto_prompt = false;
         this.prompter.get_dialog_parent.connect (on_dialog_parent);
         this.body_cache = new HashTable<string, MessageContent> (str_hash, str_equal);
+        this.body_cache_touched = new HashTable<string, int64?> (str_hash, str_equal);
         this.flag_flush_queue = new GenericArray<FlagFlushJob> ();
         this.flag_flush_latest = new HashTable<string, FlagFlushJob> (str_hash, str_equal);
         this.transfer_flush_queue = new GenericArray<TransferFlushJob> ();
         this.transfer_pending = new HashTable<string, uint> (str_hash, str_equal);
         this.folder_watches = new HashTable<string, FolderWatch> (str_hash, str_equal);
         this.prefetch_cursor = new HashTable<string, int> (str_hash, str_equal);
+        this.prefetch_body_skipped = new HashTable<string, uint8> (str_hash, str_equal);
+        this.body_text_index = new BodyTextIndex ();
         this.m365_folder_types_ok = new HashTable<string, bool> (str_hash, str_equal);
     }
 
@@ -614,6 +632,13 @@ public class Mail.MailSession : Camel.Session {
         }
     }
 
+    /* Set by list_messages when refresh_info hit its time budget mid-way. */
+    public bool last_list_refresh_incomplete { get; private set; }
+    /* Graph refresh_info threw a non-cancel error (socket timeout, etc.). */
+    public bool last_list_refresh_failed { get; private set; }
+    /* Camel UID summary shrank past INCOMPLETE_REFRESH_SHRINK_MAX this refresh. */
+    public bool last_list_refresh_rewound { get; private set; }
+
     public async GenericArray<Message> list_messages (
         Account account,
         Folder folder,
@@ -633,11 +658,20 @@ public class Mail.MailSession : Camel.Session {
         if (watch)
             watch_camel_folder (account, folder, camel_folder);
 
+        this.last_list_refresh_failed = false;
+        this.last_list_refresh_rewound = false;
+        var refresh_completed = true;
         if (refresh
             && refresh_timeout_seconds != REFRESH_INFO_SKIP
             && !folder_has_pending_flags (account, folder)) {
-            yield refresh_folder_info (camel_folder, high, cancellable, refresh_timeout_seconds);
+            refresh_completed = yield refresh_folder_info (
+                camel_folder,
+                high,
+                cancellable,
+                refresh_timeout_seconds
+            );
         }
+        this.last_list_refresh_incomplete = refresh && !refresh_completed;
 
         if (cancellable != null && cancellable.is_cancelled ())
             throw new IOError.CANCELLED ("Cancelled");
@@ -663,6 +697,74 @@ public class Mail.MailSession : Camel.Session {
         } else {
             merged = true;
         }
+
+        /* Header shrink policy (objective, not folder kind/name):
+         *
+         * Catastrophic = incoming + INCOMPLETE_REFRESH_SHRINK_MAX < previous.
+         *
+         * 1. Incomplete refresh (budget timed out) → always keep prior list
+         *    (any folder). Partial Graph/Camel summaries are untrusted.
+         * 2. Complete refresh + incoming empty → accept (folder cleared on
+         *    server; Empty Trash from another client, etc.).
+         * 3. Complete refresh + previous already large (≥ HEADER_LIST_LARGE)
+         *    + catastrophic shrink to a non-empty partial → keep prior list.
+         *    Online Archive and any big custom folder can "complete" with a
+         *    tiny local UID set; kind/name must not gate this.
+         * 4. Small folders + complete refresh → trust Camel (normal deletes).
+         *
+         * Empty Trash/Junk *from Letter* clears RAM/disk/high-water first, so
+         * previous is already empty before the next list_messages. */
+        if (previous != null
+            && previous.length > 0
+            && messages.length + INCOMPLETE_REFRESH_SHRINK_MAX < previous.length) {
+            var keep = false;
+            string reason;
+            if (refresh && !refresh_completed) {
+                keep = true;
+                reason = "incomplete refresh";
+            } else if (messages.length == 0 && refresh && refresh_completed) {
+                keep = false;
+                reason = "complete empty";
+            } else if (previous.length >= HEADER_LIST_LARGE) {
+                keep = true;
+                reason = refresh
+                    ? (refresh_completed ? "large-folder refuse shrink" : "incomplete refresh")
+                    : "large-folder local refuse shrink";
+            } else {
+                keep = false;
+                reason = "small-folder trust shrink";
+            }
+
+            if (keep) {
+                var kept = previous.length;
+                var partial = messages.length;
+                messages = merge_incomplete_refresh_keep (previous, messages);
+                sort_messages_by_date (messages);
+                Utils.sync_log (
+                    "headers “%s” %s — keep %u (reject shrink to %u, +%u tip)".printf (
+                        folder.name,
+                        reason,
+                        kept,
+                        partial,
+                        messages.length > kept ? messages.length - kept : 0
+                    )
+                );
+                merged = true;
+                added = messages.length > kept ? messages.length - kept : 0;
+                gone = 0;
+                this.last_list_refresh_incomplete = true;
+            } else if (reason == "complete empty" || reason == "small-folder trust shrink") {
+                Utils.sync_log (
+                    "headers “%s” %s (%u ← %u)".printf (
+                        folder.name,
+                        reason,
+                        messages.length,
+                        previous.length
+                    )
+                );
+            }
+        }
+
         if (refresh) {
             if (merged && added == 0 && gone == 0) {
                 Utils.sync_log ("headers “%s” unchanged (%u messages)".printf (
@@ -696,6 +798,38 @@ public class Mail.MailSession : Camel.Session {
         return messages;
     }
 
+    /* Keep every prior header; append UIDs present only in the partial list. */
+    private static GenericArray<Message> merge_incomplete_refresh_keep (
+        GenericArray<Message> previous,
+        GenericArray<Message> partial
+    ) {
+        var have = new HashTable<string, uint8> (str_hash, str_equal);
+        var result = new GenericArray<Message> ();
+        for (uint i = 0; i < previous.length; i++) {
+            result.add (previous[i]);
+            if (previous[i].uid != null && previous[i].uid.length > 0)
+                have.set (previous[i].uid, 1);
+        }
+        for (uint i = 0; i < partial.length; i++) {
+            var uid = partial[i].uid;
+            if (uid == null || uid.length == 0 || have.contains (uid))
+                continue;
+            have.set (uid, 1);
+            result.add (partial[i]);
+        }
+        return result;
+    }
+
+    private static void sort_messages_by_date (GenericArray<Message> messages) {
+        messages.sort ((a, b) => {
+            if (a.date < b.date)
+                return 1;
+            if (a.date > b.date)
+                return -1;
+            return 0;
+        });
+    }
+
     public async void follow_folder (Account account, Folder folder) throws Error {
         if (folder.is_virtual_view)
             return;
@@ -703,20 +837,93 @@ public class Mail.MailSession : Camel.Session {
         watch_camel_folder (account, folder, camel_folder);
     }
 
-    public async GenericArray<Message> search_folder (
+    /* Local Camel FolderSearch. Body matches use FolderSearch with
+     * only_cached_messages — Folder.search_by_expression leaves that false, so
+     * body-contains calls get_message_sync per UID and SIGSEGVs on EWS/M365. */
+    public async GenericArray<Message> search_folder_local (
         Account account,
         Folder folder,
-        SearchQuery query
+        SearchQuery query,
+        bool include_body = true,
+        uint limit = 400
     ) throws Error {
-        if (query.is_empty)
-            return new GenericArray<Message> ();
+        var messages = new GenericArray<Message> ();
+        if (query.is_empty || limit == 0)
+            return messages;
 
         var camel_folder = yield open_camel_folder (account, folder, null);
+        /* Never call Camel.Folder.has_search_capability: the VAPI marks it
+         * [NoWrapper], so Vala calls the class slot directly and Camel 3.56
+         * leaves that slot NULL — the call jumps to address 0. The Camel search
+         * entry points guard their own vfuncs and return NULL when missing. */
+
         var outgoing = folder.kind == FolderKind.SENT
             || folder.kind == FolderKind.DRAFTS
             || folder.kind == FolderKind.OUTBOX;
-        var messages = new GenericArray<Message> ();
+        /* The body pass runs the whole query, not just the text clauses: a
+         * from:/to: filter has to constrain body hits the same way it
+         * constrains header hits. Without a text clause there is nothing a body
+         * could add over Letter's own header scan. */
+        if (include_body && !query_has_text_clause (query))
+            return messages;
+
         GenericArray<string> uids;
+        if (include_body) {
+            uids = search_body_index (account, folder, query, limit);
+        } else {
+            yield enter_camel (false);
+            try {
+                uids = folder_search_uids (
+                    camel_folder,
+                    header_search_expression (query, false)
+                );
+            } catch (Error e) {
+                Utils.sync_log ("camel search “%s” error: %s".printf (folder.name, e.message));
+                uids = new GenericArray<string> ();
+            } finally {
+                leave_camel (false);
+            }
+        }
+
+        Idle.add (search_folder_local.callback);
+        yield;
+
+        for (uint i = 0; i < uids.length && messages.length < limit; i++) {
+            var uid = uids[i];
+            var info = camel_folder.get_message_info (uid);
+            if (info == null)
+                continue;
+            var message = message_from_info (account, uid, info, folder, outgoing);
+            if (include_body && !SearchQuery.matches_header_filters (message, query))
+                continue;
+            messages.add (message);
+
+            if (i % 64 == 63) {
+                Idle.add (search_folder_local.callback);
+                yield;
+            }
+        }
+        return messages;
+    }
+
+    public async GenericArray<string> search_folder_expression_uids (
+        Account account,
+        Folder folder,
+        SearchQuery query,
+        bool include_body = false
+    ) throws Error {
+        var uids = new GenericArray<string> ();
+        if (query.is_empty)
+            return uids;
+
+        var camel_folder = yield open_camel_folder (account, folder, null);
+
+        if (include_body && !query_has_text_clause (query))
+            return uids;
+
+        if (include_body)
+            return search_body_index (account, folder, query, 400);
+
         yield enter_camel (false);
         try {
             uids = folder_search_uids (
@@ -729,33 +936,25 @@ public class Mail.MailSession : Camel.Session {
         } finally {
             leave_camel (false);
         }
+        return uids;
+    }
 
-        if (uids.length == 0)
-            return messages;
+    public async GenericArray<Message> search_folder (
+        Account account,
+        Folder folder,
+        SearchQuery query
+    ) throws Error {
+        return yield search_folder_local (account, folder, query, false, 400);
+    }
 
-        for (uint i = 0; i < uids.length; i++) {
-            var uid = uids[i];
-            var info = camel_folder.get_message_info (uid);
-            if (info != null) {
-                var message = message_from_info (account, uid, info, folder, outgoing, camel_folder);
-                if (SearchQuery.matches_message (message, query))
-                    messages.add (message);
-            }
-
-            if (i % 48 == 47) {
-                Idle.add (search_folder.callback);
-                yield;
-            }
+    /* Only a contains:/bare term can match a body; from: and to: are headers. */
+    private static bool query_has_text_clause (SearchQuery query) {
+        for (uint i = 0; i < query.clauses.length; i++) {
+            var clause = query.clauses[i];
+            if (clause.kind == SearchFilterKind.TEXT && clause.folded.length > 0)
+                return true;
         }
-
-        messages.sort ((a, b) => {
-            if (a.date < b.date)
-                return 1;
-            if (a.date > b.date)
-                return -1;
-            return 0;
-        });
-        return messages;
+        return false;
     }
 
     public static string header_search_expression (SearchQuery query, bool include_body = false) {
@@ -824,6 +1023,19 @@ public class Mail.MailSession : Camel.Session {
         return uids;
     }
 
+    /* camel_folder_search_free takes the array over (g_ptr_array_free). The
+     * 3.56 VAPI returns it owned, so Vala would unref it too — that double
+     * free corrupts the heap. Camel 3.58 search_sync transfers a weak array
+     * and has no FolderSearch type. */
+#if !HAVE_CAMEL_3_58
+    [CCode (cname = "camel_folder_search_free")]
+    private static extern void camel_search_free_owned (
+        Camel.Folder folder,
+        owned GenericArray<string> result
+    );
+#endif
+
+    /* Header search only — summary fields, never a MIME fetch. */
     private static GenericArray<string> folder_search_uids (
         Camel.Folder camel_folder,
         string expression
@@ -840,11 +1052,116 @@ public class Mail.MailSession : Camel.Session {
 #else
         var found = camel_folder.search_by_expression (expression, null);
         var uids = new GenericArray<string> ();
+        if (found == null)
+            return uids;
         for (uint i = 0; i < found.length; i++)
             uids.add (found[i]);
-        camel_folder.search_free (found);
+        camel_search_free_owned (camel_folder, (owned) found);
         return uids;
 #endif
+    }
+
+    /* Folded plain text already extracted during prefetch / open. No MIME
+     * parse and no Camel FolderSearch at query time. */
+    private GenericArray<string> search_body_index (
+        Account account,
+        Folder folder,
+        SearchQuery query,
+        uint limit
+    ) {
+        var uids = new GenericArray<string> ();
+        var tokens = query.text_tokens ();
+        if (tokens.length == 0)
+            return uids;
+
+        var t0 = Utils.sync_tick ();
+        uint scanned = 0;
+        BodyTextIndex.scan (account.source_uid ?? account.uid, folder.full_name, (uid, text) => {
+            scanned++;
+            if (query.match_any) {
+                var any = false;
+                for (uint i = 0; i < tokens.length; i++) {
+                    if (text.contains (tokens[i])) {
+                        any = true;
+                        break;
+                    }
+                }
+                if (!any)
+                    return true;
+            } else {
+                for (uint i = 0; i < tokens.length; i++) {
+                    if (!text.contains (tokens[i]))
+                        return true;
+                }
+            }
+            uids.add (uid);
+            return uids.length < limit;
+        });
+
+        if (scanned > 0) {
+            Utils.sync_log (
+                "body index search “%s” %s → %u of %u indexed".printf (
+                    folder.name,
+                    Utils.sync_ms (t0),
+                    uids.length,
+                    scanned
+                )
+            );
+        }
+        return uids;
+    }
+
+    public void index_cached_body (Account account, Folder folder, string uid, string? plain_text) {
+        this.body_text_index.add (
+            account.source_uid ?? account.uid,
+            folder.full_name,
+            uid,
+            plain_text
+        );
+    }
+
+    /* Index MIME already on disk that is not yet in BodyTextIndex (beyond tip
+     * prefetch). Offline only — never Graph. Returns how many were newly indexed. */
+    public async uint index_more_cached_bodies (
+        Account account,
+        Folder folder,
+        uint max_new = 500,
+        Cancellable? cancellable = null
+    ) throws Error {
+        if (max_new == 0 || folder.is_virtual_view)
+            return 0;
+
+        var camel_folder = yield open_camel_folder (account, folder, cancellable);
+        var account_uid = account.source_uid ?? account.uid;
+        var all = folder_list_uids (camel_folder);
+        uint added = 0;
+        for (uint i = 0; i < all.length && added < max_new; i++) {
+            if (cancellable != null && cancellable.is_cancelled ())
+                break;
+            var uid = all[i];
+            if (this.body_text_index.has (account_uid, folder.full_name, uid))
+                continue;
+            if (!message_body_file_exists (camel_folder, uid))
+                continue;
+            index_disk_body_if_needed (account, folder, camel_folder, uid);
+            if (this.body_text_index.has (account_uid, folder.full_name, uid))
+                added++;
+            if (added % 8 == 0 || i % 64 == 63) {
+                Idle.add (index_more_cached_bodies.callback);
+                yield;
+            }
+        }
+        if (added > 0) {
+            Utils.sync_log (
+                "body index deepen “%s” +%u (of %u camel uids)".printf (
+                    folder.name,
+                    added,
+                    all.length
+                )
+            );
+            release_transient_memory ();
+        }
+        return added;
     }
 
     /* Matches camel_search_util_hash_message_id / FolderSearch.util_hash_message_id
@@ -870,6 +1187,8 @@ public class Mail.MailSession : Camel.Session {
     }
 
     public static bool folder_is_heavy (Folder folder) {
+        /* Role in the mailbox tree (IMAP/Graph special use), NOT size.
+         * Size-based behaviour uses HEADER_LIST_LARGE / folder_is_large. */
         return folder.is_archive_mailbox
             || folder.kind == FolderKind.JUNK
             || folder.kind == FolderKind.TRASH;
@@ -902,6 +1221,28 @@ public class Mail.MailSession : Camel.Session {
     ) throws Error {
         int remote_total = -1;
         int remote_unread = -1;
+        return yield remote_counts_differ_full (
+            account,
+            folder,
+            local_total,
+            local_unread,
+            cancellable,
+            out remote_total,
+            out remote_unread
+        );
+    }
+
+    public async bool remote_counts_differ_full (
+        Account account,
+        Folder folder,
+        int local_total,
+        int local_unread,
+        Cancellable? cancellable,
+        out int remote_total,
+        out int remote_unread
+    ) throws Error {
+        remote_total = -1;
+        remote_unread = -1;
         if (!yield query_remote_counts (account, folder.full_name, cancellable, out remote_total, out remote_unread))
             return false;
 
@@ -958,6 +1299,16 @@ public class Mail.MailSession : Camel.Session {
                      * must not interrupt Graph transfers). */
                     Utils.sync_log ("Camel lock: cancelling flag sync for priority work");
                     this.flag_op_cancellable.cancel ();
+                } else if (this.graph_refresh_holders > 0) {
+                    /* refresh_info owns Graph until budget end — never cancel
+                     * mid-wave (shreds M365 Camel summaries). Send/open wait. */
+                    if (spins == 100 || spins % 500 == 0) {
+                        Utils.sync_log (
+                            this.send_waiters > 0
+                                ? "Camel lock: send waiting for refresh_info slice"
+                                : "Camel lock: waiting for refresh_info slice (open)"
+                        );
+                    }
                 } else if (spins >= 1000) {
                     if (flush_holds) {
                         if (spins == 1000 || spins % 500 == 0) {
@@ -1024,10 +1375,31 @@ public class Mail.MailSession : Camel.Session {
     public const uint REFRESH_INFO_BRIEF = 15;
     public const uint REFRESH_INFO_NORMAL = 45;
     public const uint REFRESH_INFO_FULL = 90;
-    /* Explicit Update Folder — only wall-clock ends it (matches sync interval). */
+    /* Explicit Update Folder — run until Graph finishes (no wall-clock cancel).
+     * Value equals FORCE so heartbeat interval stays 300s; distinguished by name. */
     public const uint REFRESH_INFO_FORCE = 300;
+    /* User Update Folder: same as FORCE but refresh_folder_info never budget-cancels. */
+    public const uint REFRESH_INFO_FORCE_UNTIL_DONE = uint.MAX - 1;
+    /* Soft-extend idle/deep FORCE while Graph is still warming or Camel UIDs climb —
+     * chopping at 300s restarts the warm-up and stalls Archive rebuild. */
+    private const uint REFRESH_INFO_FORCE_MAX_EXTENDS = 3;
+    /* Folders with at least this many known headers are treated as *large*
+     * for list UX and shrink protection — objective scale, not folder kind
+     * or display name (custom archive, big Sent, big Trash, …). */
+    public const uint HEADER_LIST_LARGE = 500;
+    /* After a timed-out / untrusted refresh, reject Camel merges that shrink
+     * Letter's header list by more than this (partial summaries look "empty"). */
+    public const uint INCOMPLETE_REFRESH_SHRINK_MAX = 100;
 
-    private async void refresh_folder_info (
+    public static bool is_force_refresh_timeout (uint timeout_seconds) {
+        return timeout_seconds == REFRESH_INFO_FORCE
+            || timeout_seconds == REFRESH_INFO_FORCE_UNTIL_DONE;
+    }
+
+    /* Returns false when the time budget ended mid-refresh (Camel summary may
+     * be partial). Parent cancel still throws via list_messages.
+     * REFRESH_INFO_FORCE_UNTIL_DONE never wall-clock cancels (Update Folder). */
+    private async bool refresh_folder_info (
         Camel.Folder camel_folder,
         bool high,
         Cancellable? cancellable = null,
@@ -1045,43 +1417,148 @@ public class Mail.MailSession : Camel.Session {
                 });
             }
         }
-        /* Graph refresh_info can hang indefinitely on some folders; bound it so
-         * send / open-body / Inbox checks can recover via preempt. Scout uses a
-         * shorter budget on warm bulk folders and widens only if drift remains. */
+        /* Mid-slice parent cancel shreds Online Archive summaries — FORCE waves
+         * use a dedicated cancellable. UNTIL_DONE (user Update Folder) waits for
+         * Graph; idle FORCE keeps a soft-extended budget so timer waves cannot
+         * hang forever. */
         var seconds = timeout_seconds;
         if (seconds == 0)
             seconds = high ? REFRESH_INFO_NORMAL : REFRESH_INFO_FULL;
-        var timeout_id = Timeout.add_seconds (seconds, () => {
-            if (!timed.is_cancelled ()) {
-                Utils.sync_log ("Camel refresh_info timeout (%us) — cancelling".printf (seconds));
+        var force_until_done = (timeout_seconds == REFRESH_INFO_FORCE_UNTIL_DONE);
+        var force_budget = (timeout_seconds == REFRESH_INFO_FORCE);
+        var timed_out = false;
+        var name = camel_folder.get_full_display_name () ?? camel_folder.get_full_name ();
+        var uids_before = folder_list_uids (camel_folder).length;
+        var uids_checkpoint = uids_before;
+        uint extends_used = 0;
+        uint timeout_id = 0;
+        if (force_until_done) {
+            timeout_id = Timeout.add_seconds (REFRESH_INFO_FORCE, () => {
+                if (timed.is_cancelled ())
+                    return Source.REMOVE;
+                var uids_now = folder_list_uids (camel_folder).length;
+                Utils.sync_log (
+                    "Camel refresh_info heartbeat “%s” uids %u (started %u, no budget cancel)".printf (
+                        name,
+                        uids_now,
+                        uids_before
+                    )
+                );
+                return Source.CONTINUE;
+            });
+        } else {
+            timeout_id = Timeout.add_seconds (seconds, () => {
+                if (timed.is_cancelled ())
+                    return Source.REMOVE;
+
+                if (force_budget && extends_used < REFRESH_INFO_FORCE_MAX_EXTENDS) {
+                    var uids_now = folder_list_uids (camel_folder).length;
+                    var climbing = uids_now > uids_checkpoint;
+                    var still_warming = uids_now <= uids_before;
+                    if (climbing || still_warming) {
+                        extends_used++;
+                        if (climbing)
+                            uids_checkpoint = uids_now;
+                        Utils.sync_log (
+                            "Camel refresh_info budget extended “%s” +%us (ext %u/%u, uids %u, %s)".printf (
+                                name,
+                                REFRESH_INFO_FORCE,
+                                extends_used,
+                                REFRESH_INFO_FORCE_MAX_EXTENDS,
+                                uids_now,
+                                climbing ? "climbing" : "warm-up"
+                            )
+                        );
+                        /* CONTINUE re-arms the same interval without ending Graph. */
+                        return Source.CONTINUE;
+                    }
+                }
+
+                Utils.sync_log (
+                    "Camel refresh_info timeout (%us) — ending slice".printf (
+                        force_budget
+                            ? REFRESH_INFO_FORCE * (1 + extends_used)
+                            : seconds
+                    )
+                );
+                timed_out = true;
                 timed.cancel ();
-            }
-            return Source.REMOVE;
-        });
+                return Source.REMOVE;
+            });
+        }
+        var completed = false;
+        this.graph_refresh_holders++;
         try {
-            var name = camel_folder.get_full_display_name () ?? camel_folder.get_full_name ();
             var t0 = Utils.sync_tick ();
             /* Graph: skip prepare_content_refresh — it resets the delta cursor. */
             yield camel_folder.refresh_info (high ? Priority.DEFAULT : Priority.LOW, timed);
-            Utils.sync_log ("Camel refresh_info “%s” %s %s".printf (
+            completed = !timed_out;
+            var uids_after = folder_list_uids (camel_folder).length;
+            if (uids_after + INCOMPLETE_REFRESH_SHRINK_MAX < uids_before)
+                this.last_list_refresh_rewound = true;
+            Utils.sync_log ("Camel refresh_info “%s” %s %s (uids %u→%u%s)".printf (
                 name,
                 high ? "HIGH" : "LOW",
-                Utils.sync_ms (t0)
+                Utils.sync_ms (t0),
+                uids_before,
+                uids_after,
+                timed_out
+                    ? (extends_used > 0
+                        ? ", budget after %u extend(s)".printf (extends_used)
+                        : ", budget")
+                    : (force_until_done
+                        ? ", until-done"
+                        : (extends_used > 0
+                            ? ", %u extend(s)".printf (extends_used)
+                            : ""))
             ));
+            if (this.last_list_refresh_rewound) {
+                Utils.sync_log (
+                    "Camel summary shrink “%s” %u→%u after refresh%s".printf (
+                        name,
+                        uids_before,
+                        uids_after,
+                        timed_out ? " (budget)" : ""
+                    )
+                );
+            }
         } catch (Error e) {
-            if (e is IOError.CANCELLED)
-                Utils.sync_log ("Camel refresh_info CANCELLED");
-            else {
+            var uids_after = folder_list_uids (camel_folder).length;
+            if (uids_after + INCOMPLETE_REFRESH_SHRINK_MAX < uids_before)
+                this.last_list_refresh_rewound = true;
+            if (e is IOError.CANCELLED) {
+                Utils.sync_log ("Camel refresh_info CANCELLED%s (uids %u→%u)".printf (
+                    timed_out
+                        ? (extends_used > 0
+                            ? " (budget after %u extend(s))".printf (extends_used)
+                            : " (budget)")
+                        : "",
+                    uids_before,
+                    uids_after
+                ));
+                if (this.last_list_refresh_rewound && !timed_out) {
+                    Utils.sync_log (
+                        "Camel summary shrink “%s” %u→%u after mid-refresh cancel".printf (
+                            name,
+                            uids_before,
+                            uids_after
+                        )
+                    );
+                }
+            } else {
+                this.last_list_refresh_failed = true;
                 Utils.sync_log ("Camel refresh_info FAILED: %s".printf (e.message));
                 warning ("Could not refresh folder: %s", e.message);
             }
         } finally {
+            this.graph_refresh_holders--;
             if (timeout_id != 0)
                 Source.remove (timeout_id);
             if (cancel_id != 0 && cancellable != null)
                 cancellable.disconnect (cancel_id);
             leave_camel (high);
         }
+        return completed && !timed_out;
     }
 
     private async Camel.MimeMessage? fetch_camel_message (
@@ -1125,6 +1602,16 @@ public class Mail.MailSession : Camel.Session {
 
         total = match.total;
         unread = match.unread;
+        /* M365: FolderInfo.total tracks Camel saved-count after the folder is
+         * open — not a live Graph totalItemCount. Callers must not treat this
+         * as server truth for Archive settle / auto Update Folder. */
+        Utils.sync_log (
+            "Camel FolderInfo “%s” total=%d unread=%d (local store-summary, not Graph totalItemCount)".printf (
+                full_name,
+                total,
+                unread
+            )
+        );
         return total >= 0 || unread >= 0;
     }
 
@@ -1191,7 +1678,7 @@ public class Mail.MailSession : Camel.Session {
 
             var info = camel_folder.get_message_info (uids[i]);
             if (info != null)
-                messages.add (message_from_info (account, uids[i], info, folder, outgoing, camel_folder));
+                messages.add (message_from_info (account, uids[i], info, folder, outgoing));
 
             if (i % 48 == 47) {
                 if (total >= 2000 && (i + 1) % 2000 == 0) {
@@ -1222,6 +1709,9 @@ public class Mail.MailSession : Camel.Session {
                 return -1;
             return 0;
         });
+        /* Summary-only collect — still release Camel arenas warmed by
+         * get_message_info / UID walks so deep sync cannot pin multi-GB RSS. */
+        release_transient_memory ();
         return messages;
     }
 
@@ -1289,7 +1779,7 @@ public class Mail.MailSession : Camel.Session {
                 var info = camel_folder.get_message_info (uid);
                 if (info == null)
                     continue;
-                result.add (message_from_info (account, uid, info, folder, outgoing, camel_folder));
+                result.add (message_from_info (account, uid, info, folder, outgoing));
             }
         }
 
@@ -1401,8 +1891,7 @@ public class Mail.MailSession : Camel.Session {
         string uid,
         Camel.MessageInfo info,
         Folder folder,
-        bool outgoing,
-        Camel.Folder? camel_folder = null
+        bool outgoing
     ) {
         int64 date = info.get_date_received ();
         if (date <= 0)
@@ -1466,7 +1955,7 @@ public class Mail.MailSession : Camel.Session {
             folder_full_name = folder.full_name,
             outgoing = outgoing,
             msgid_hash = info.get_message_id (),
-            msgid_refs = msgid_refs_from_info (info, camel_folder, uid),
+            msgid_refs = msgid_refs_from_info (info),
             conversation_key = conversation_key_from_info (info),
             search_blob = blob.str,
         };
@@ -1547,11 +2036,10 @@ public class Mail.MailSession : Camel.Session {
         };
     }
 
-    private static uint64[] msgid_refs_from_info (
-        Camel.MessageInfo info,
-        Camel.Folder? camel_folder,
-        string uid
-    ) {
+    /* Header lists use Camel.MessageInfo only. Never open full MIME here —
+     * get_message_cached on Archive with bodies on disk multiplies into
+     * multi-GB RSS during deep sync collect waves. */
+    private static uint64[] msgid_refs_from_info (Camel.MessageInfo info) {
         var seen = new HashTable<string, uint8> (str_hash, str_equal);
         var list = new Array<uint64> ();
 
@@ -1561,20 +2049,11 @@ public class Mail.MailSession : Camel.Session {
                 append_msgid_hash (list, seen, refs.index (i));
         }
 
-        // Some clients (old Outlook / third-party gateways) store In-Reply-To
-        // and References as RFC 2047 encoded-words. Camel's summary may miss
-        // those links; decode and re-parse from headers and the local MIME.
+        /* Some clients store In-Reply-To / References as RFC 2047
+         * encoded-words; Camel summary may miss them — decode from the
+         * summary header map only (no MIME load). */
         collect_msgid_hashes (list, seen, info_header (info, "In-Reply-To"));
         collect_msgid_hashes (list, seen, info_header (info, "References"));
-
-        if (camel_folder != null) {
-            var mime = message_from_local_cache (camel_folder, uid);
-            if (mime != null) {
-                var medium = (Camel.Medium) mime;
-                collect_msgid_hashes (list, seen, medium.get_header ("In-Reply-To"));
-                collect_msgid_hashes (list, seen, medium.get_header ("References"));
-            }
-        }
 
         if (list.length == 0)
             return {};
@@ -1794,12 +2273,33 @@ public class Mail.MailSession : Camel.Session {
         if (watch == null || watch.camel_folder == null)
             return removed;
 
+        /* Online Archive / incomplete Graph summaries often expose far fewer
+         * UIDs than Letter's durable header index. Treating missing
+         * MessageInfo as "deleted" wiped 9k lists down to a few hundred on
+         * every archive move (folder_changed) and mid-sync tip. Only trust
+         * live removals when Camel is roughly caught up with Letter. */
+        var trust_removals = true;
+        if (messages.length >= HEADER_LIST_LARGE) {
+            var camel_n = folder_list_uids (watch.camel_folder).length;
+            trust_removals = camel_n + INCOMPLETE_REFRESH_SHRINK_MAX >= messages.length;
+            if (!trust_removals) {
+                Utils.sync_log (
+                    "live flags “%s” skip removals (Letter %u, Camel %u)".printf (
+                        folder.name,
+                        messages.length,
+                        camel_n
+                    )
+                );
+            }
+        }
+
         for (uint i = 0; i < messages.length; i++) {
             if (messages[i].is_placeholder)
                 continue;
             var info = watch.camel_folder.get_message_info (messages[i].uid);
             if (info == null) {
-                removed.add (messages[i].uid);
+                if (trust_removals)
+                    removed.add (messages[i].uid);
                 continue;
             }
 
@@ -1830,7 +2330,7 @@ public class Mail.MailSession : Camel.Session {
             var info = watch.camel_folder.get_message_info (uids[i]);
             if (info == null)
                 continue;
-            messages.add (message_from_info (account, uids[i], info, folder, outgoing, watch.camel_folder));
+            messages.add (message_from_info (account, uids[i], info, folder, outgoing));
             added++;
         }
 
@@ -1853,7 +2353,50 @@ public class Mail.MailSession : Camel.Session {
     }
 
     public MessageContent? peek_body (Account account, Folder folder, string uid) {
-        return this.body_cache.get (body_key (account, folder, uid));
+        var key = body_key (account, folder, uid);
+        var content = this.body_cache.get (key);
+        if (content != null)
+            touch_body_cache_key (key);
+        return content;
+    }
+
+    /* Disk Camel cache only — no Graph, no enter_camel. Safe during an align
+     * slice so open-body does not wait when the message is already on disk. */
+    public async MessageContent? try_load_body_from_disk (
+        Account account,
+        Folder folder,
+        string uid,
+        Cancellable? cancellable = null
+    ) throws Error {
+        var key = body_key (account, folder, uid);
+        var cached = this.body_cache.get (key);
+        if (cached != null) {
+            touch_body_cache_key (key);
+            this.pinned_body_key = key;
+            return cached;
+        }
+
+        var camel_folder = yield open_camel_folder (account, folder, cancellable);
+        if (cancellable != null && cancellable.is_cancelled ())
+            return null;
+        var mime = message_from_local_cache (camel_folder, uid);
+        if (mime == null)
+            return null;
+
+        Utils.sync_log ("open body “%s” uid=%s from disk (no wait)".printf (folder.name, uid));
+        var fetched = MessageContent.from_mime (uid, mime);
+        this.pinned_body_key = key;
+        remember_body_cache (key, fetched);
+        index_cached_body (account, folder, uid, fetched.plain_text);
+        return fetched;
+    }
+
+    public void pin_open_body (Account account, Folder folder, string uid) {
+        this.pinned_body_key = body_key (account, folder, uid);
+    }
+
+    public void clear_open_body_pin () {
+        this.pinned_body_key = null;
     }
 
     public void rekey_body (Account account, Folder from, string old_uid, Folder dest, string new_uid) {
@@ -1866,20 +2409,29 @@ public class Mail.MailSession : Camel.Session {
         if (content == null)
             return;
 
-        if (from_key != dest_key)
+        if (from_key != dest_key) {
             this.body_cache.remove (from_key);
-        if (old_uid != new_uid)
+            this.body_cache_touched.remove (from_key);
+        }
+        if (old_uid != new_uid) {
             this.body_cache.remove (dest_old_key);
+            this.body_cache_touched.remove (dest_old_key);
+        }
 
         content.uid = new_uid;
-        this.body_cache.set (dest_key, content);
+        remember_body_cache (dest_key, content);
+        if (this.pinned_body_key == from_key || this.pinned_body_key == dest_old_key)
+            this.pinned_body_key = dest_key;
     }
 
     public async MessageContent load_message (Account account, Folder folder, string uid, Cancellable? cancellable = null) throws Error {
         var key = body_key (account, folder, uid);
         var cached = this.body_cache.get (key);
-        if (cached != null)
+        if (cached != null) {
+            touch_body_cache_key (key);
+            this.pinned_body_key = key;
             return cached;
+        }
 
         var camel_folder = yield open_camel_folder (account, folder, null);
         var mime = message_from_local_cache (camel_folder, uid);
@@ -1908,7 +2460,10 @@ public class Mail.MailSession : Camel.Session {
         }
 
         var fetched = MessageContent.from_mime (uid, mime);
-        this.body_cache.set (key, fetched);
+        this.pinned_body_key = key;
+        remember_body_cache (key, fetched);
+        index_cached_body (account, folder, uid, fetched.plain_text);
+        release_transient_memory ();
         return fetched;
     }
 
@@ -2010,7 +2565,8 @@ public class Mail.MailSession : Camel.Session {
         Folder folder,
         GenericArray<Message> listed,
         int days,
-        Cancellable? cancellable = null
+        Cancellable? cancellable = null,
+        int max_index = -1
     ) throws Error {
         int64 cutoff = body_cache_cutoff (days);
         var camel_folder = yield open_camel_folder (account, folder, null);
@@ -2022,25 +2578,42 @@ public class Mail.MailSession : Camel.Session {
         if (start < 0 || start > (int) listed.length)
             start = 0;
 
+        /* Tip / scroll window: never walk the entire Archive list into Camel MIME. */
+        var window_end = (int) listed.length;
+        if (max_index >= 0)
+            window_end = int.min (max_index, window_end);
+        if (start >= window_end) {
+            this.prefetch_cursor.set (cursor_key, 0);
+            schedule_prefetch_cursor_save ();
+            return 0;
+        }
+
         uint stored = 0;
         uint skipped_disk = 0;
+        uint skipped_timeout = 0;
         int i = start;
         var t0 = Utils.sync_tick ();
 
-        for (; i < (int) listed.length && stored < PREFETCH_NETWORK_CHUNK; i++) {
+        for (; i < window_end && stored < PREFETCH_NETWORK_CHUNK; i++) {
             if (cancellable != null && cancellable.is_cancelled ())
                 break;
 
             var message = listed[i];
             if (cutoff > 0 && message.date > 0 && message.date < cutoff)
                 break;
-            if (this.body_cache.contains (body_key (account, folder, message.uid)))
+            var skip_key = body_key (account, folder, message.uid);
+            if (this.prefetch_body_skipped.contains (skip_key)) {
+                skipped_timeout++;
+                continue;
+            }
+            if (this.body_cache.contains (skip_key))
                 continue;
             /* Filename check only — never get_message_cached() here (that loads
              * the full MIME into RAM just to probe). */
             if (message_body_file_exists (camel_folder, message.uid)) {
                 skipped_disk++;
-                if (skipped_disk % 128 == 0) {
+                index_disk_body_if_needed (account, folder, camel_folder, message.uid);
+                if (skipped_disk % 32 == 0) {
                     Idle.add (prefetch_recent.callback);
                     yield;
                 }
@@ -2056,13 +2629,25 @@ public class Mail.MailSession : Camel.Session {
                     /* Full MIME (body + attachments) into Camel’s on-disk cache. */
                     yield camel_folder.synchronize_message (message.uid, Priority.LOW, timed);
                     stored++;
+                    index_disk_body_if_needed (account, folder, camel_folder, message.uid);
                 } finally {
                     unbind_cancellable (cancellable, parent_id, timeout_id);
                     leave_camel (false);
                 }
             } catch (Error e) {
-                if (e is IOError.CANCELLED)
+                /* Folder switch / timer cancel the parent. A 45s timeout
+                 * cancels only the per-message cancellable: skip that UID
+                 * and keep the cursor moving. */
+                if (cancellable != null && cancellable.is_cancelled ())
                     throw e;
+                if (e is IOError.CANCELLED) {
+                    this.prefetch_body_skipped.set (skip_key, 1);
+                    skipped_timeout++;
+                    Utils.sync_log ("prefetch “%s” skip uid %s — body timeout (45s)".printf (
+                        folder.name,
+                        message.uid
+                    ));
+                }
             }
 
             /* Let send / Inbox refresh take Camel before the next download. */
@@ -2073,7 +2658,7 @@ public class Mail.MailSession : Camel.Session {
             yield;
         }
 
-        var reached_end = i >= (int) listed.length
+        var reached_end = i >= window_end
             || (cutoff > 0 && i < (int) listed.length && listed[i].date > 0 && listed[i].date < cutoff);
         /* If we paused for a high-priority waiter, resume later from here. */
         var paused_for_priority = this.high_refresh_waiters > 0 && !reached_end
@@ -2082,21 +2667,22 @@ public class Mail.MailSession : Camel.Session {
         this.prefetch_cursor.set (cursor_key, next_cursor);
         schedule_prefetch_cursor_save ();
 
-        if (stored > 0 || skipped_disk > 0 || start > 0) {
-            Utils.sync_log ("prefetch “%s” done %s from-server=%u skipped-disk=%u cursor=%d/%u%s".printf (
+        if (stored > 0 || skipped_disk > 0 || skipped_timeout > 0 || start > 0) {
+            Utils.sync_log ("prefetch “%s” done %s from-server=%u skipped-disk=%u skipped-timeout=%u cursor=%d/%d (list=%u)%s".printf (
                 folder.name,
                 Utils.sync_ms (t0),
                 stored,
                 skipped_disk,
+                skipped_timeout,
                 next_cursor,
+                window_end,
                 listed.length,
                 paused_for_priority ? " (paused for priority)" : (reached_end ? " (window complete)" : "")
             ));
         }
 
         /* Camel/SQLite and glibc keep arenas warm across thousands of MIME parses. */
-        Camel.DB.release_cache_memory ();
-        trim_process_heap ();
+        release_transient_memory ();
         /* Signal caller to requeue when more work remains (chunk full or paused). */
         if (paused_for_priority && stored < PREFETCH_NETWORK_CHUNK)
             return PREFETCH_NETWORK_CHUNK;
@@ -2227,6 +2813,160 @@ public class Mail.MailSession : Camel.Session {
         malloc_trim (0);
     }
 
+    public void release_transient_memory () {
+        Camel.DB.release_cache_memory ();
+        trim_process_heap ();
+    }
+
+    /* Drop unpinned MessageContent and Camel arenas when RSS climbs. */
+    public void relieve_memory_pressure () {
+        uint before = this.body_cache.size ();
+        flush_body_cache_unpinned ();
+        release_transient_memory ();
+        if (before > 0) {
+            Utils.sync_log (
+                "rss guard: flushed body-cache (%u → %u entries)".printf (
+                    before,
+                    this.body_cache.size ()
+                )
+            );
+        }
+    }
+
+    private void touch_body_cache_key (string key) {
+        this.body_cache_touched.set (key, Utils.sync_tick ());
+    }
+
+    private void remember_body_cache (string key, MessageContent content) {
+        this.body_cache.set (key, content);
+        touch_body_cache_key (key);
+        enforce_body_cache_ceiling ();
+    }
+
+    private void forget_body_cache_key (string key) {
+        this.body_cache.remove (key);
+        this.body_cache_touched.remove (key);
+        if (this.pinned_body_key == key)
+            this.pinned_body_key = null;
+    }
+
+    private static size_t estimate_body_content_bytes (MessageContent content) {
+        size_t n = 512;
+        if (content.html != null)
+            n += content.html.length;
+        if (content.plain_text != null)
+            n += content.plain_text.length;
+        if (content.subject != null)
+            n += content.subject.length;
+        if (content.from != null)
+            n += content.from.length;
+        if (content.to != null)
+            n += content.to.length;
+        if (content.cc != null)
+            n += content.cc.length;
+        if (content.bcc != null)
+            n += content.bcc.length;
+        if (content.attachments != null) {
+            for (uint i = 0; i < content.attachments.length; i++) {
+                var att = content.attachments[i];
+                n += 64;
+                if (att.filename != null)
+                    n += att.filename.length;
+                if (att.data != null)
+                    n += att.data.get_size ();
+            }
+        }
+        return n;
+    }
+
+    private size_t estimate_body_cache_bytes () {
+        size_t total = 0;
+        this.body_cache.foreach ((key, content) => {
+            total += 64 + key.length + estimate_body_content_bytes (content);
+        });
+        return total;
+    }
+
+    private void flush_body_cache_unpinned () {
+        var keys = new GenericArray<string> ();
+        this.body_cache.foreach ((key, content) => {
+            if (this.pinned_body_key == null || key != this.pinned_body_key)
+                keys.add (key);
+        });
+        for (uint i = 0; i < keys.length; i++)
+            forget_body_cache_key (keys[i]);
+    }
+
+    private void enforce_body_cache_ceiling () {
+        var used = estimate_body_cache_bytes ();
+        var count = this.body_cache.size ();
+        if (used <= BODY_CACHE_CEILING_BYTES && count <= BODY_CACHE_MAX_ENTRIES)
+            return;
+
+        var keys = new GenericArray<string> ();
+        this.body_cache.foreach ((key, content) => {
+            keys.add (key);
+        });
+
+        for (uint i = 0; i < keys.length; i++) {
+            uint best = i;
+            int64 best_t = body_cache_touch_time (keys[i]);
+            for (uint j = i + 1; j < keys.length; j++) {
+                int64 t = body_cache_touch_time (keys[j]);
+                if (t < best_t) {
+                    best = j;
+                    best_t = t;
+                }
+            }
+            if (best != i) {
+                var tmp = keys[i];
+                keys[i] = keys[best];
+                keys[best] = tmp;
+            }
+        }
+
+        uint evicted = 0;
+        for (uint i = 0; i < keys.length
+            && (used > BODY_CACHE_CEILING_BYTES || count > BODY_CACHE_MAX_ENTRIES); i++) {
+            var key = keys[i];
+            if (this.pinned_body_key != null && key == this.pinned_body_key)
+                continue;
+            var content = this.body_cache.get (key);
+            if (content == null)
+                continue;
+            var entry = 64 + key.length + estimate_body_content_bytes (content);
+            forget_body_cache_key (key);
+            used = used > entry ? used - entry : 0;
+            count = count > 0 ? count - 1 : 0;
+            evicted++;
+        }
+
+        if (evicted > 0) {
+            Utils.sync_log (
+                "body-cache eviction: dropped %u, now ~%u entries / ~%s (ceiling %u / %s)".printf (
+                    evicted,
+                    this.body_cache.size (),
+                    format_body_cache_size (estimate_body_cache_bytes ()),
+                    BODY_CACHE_MAX_ENTRIES,
+                    format_body_cache_size (BODY_CACHE_CEILING_BYTES)
+                )
+            );
+        }
+    }
+
+    private int64 body_cache_touch_time (string key) {
+        var t = this.body_cache_touched.get (key);
+        return t != null ? t : 0;
+    }
+
+    private static string format_body_cache_size (size_t bytes) {
+        if (bytes >= 1024UL * 1024UL)
+            return "%.1fMiB".printf (bytes / (1024.0 * 1024.0));
+        if (bytes >= 1024UL)
+            return "%.0fKiB".printf (bytes / 1024.0);
+        return "%lluB".printf ((uint64) bytes);
+    }
+
     /* Drop full bodies older than the configured window. Headers stay in the
      * folder summary so search and the message list keep working. */
     public async uint prune_stale_bodies (
@@ -2261,7 +3001,8 @@ public class Mail.MailSession : Camel.Session {
             }
 
             drop_body (account, folder, message.uid);
-            if (message_from_local_cache (camel_folder, message.uid) == null) {
+            /* Filename check only — never get_message_cached() to probe. */
+            if (!message_body_file_exists (camel_folder, message.uid)) {
                 if (i % 32 == 31) {
                     Idle.add (prune_stale_bodies.callback);
                     yield;
@@ -3310,8 +4051,11 @@ public class Mail.MailSession : Camel.Session {
         Utils.sync_log ("empty “%s” %u messages done".printf (folder.name, raw.length));
     }
 
-    /* Graph Junk: DELETED+sync only soft-moves to Trash; expunge is a no-op.
-     * Move into Trash then hard-delete there (sync without full-folder expunge). */
+    /* Graph Junk: DELETED+sync on Junk only soft-moves to Trash (expunge on
+     * Junk is a no-op — Camel permanent-deletes only from TYPE_TRASH). Outlook
+     * Empty Junk permanently deletes. So: move Junk→Trash, refresh Trash so
+     * the new UIDs are in the summary, then DELETED+sync on those UIDs
+     * (selective permanent delete — never expunge the whole Trash). */
     private async void hard_delete_m365_junk (
         Account account,
         Folder junk,
@@ -3383,26 +4127,52 @@ public class Mail.MailSession : Camel.Session {
             leave_camel (true);
         }
 
+        /* Without a Trash summary refresh, just-moved UIDs are invisible to
+         * get_message_info — purge stayed empty, Letter returned after the
+         * soft move, and server Trash grew while Letter Trash did not. */
+        try {
+            yield refresh_folder_info (trash_camel, true, cancellable, REFRESH_INFO_BRIEF);
+        } catch (Error e) {
+            Utils.sync_log ("Junk purge: Trash refresh after move: %s".printf (e.message));
+        }
+
         var purge = new GenericArray<string> ();
+        var seen = new HashTable<string, uint8> (str_hash, str_equal);
         if (transferred != null) {
             for (uint i = 0; i < transferred.length; i++) {
-                if (transferred[i] != null && transferred[i].length > 0)
-                    purge.add (transferred[i]);
+                var id = transferred[i];
+                if (id == null || id.length == 0 || seen.contains (id))
+                    continue;
+                if (trash_camel.get_message_info (id) == null)
+                    continue;
+                seen.set (id, 1);
+                purge.add (id);
             }
         }
-        /* M365 often keeps the same Graph id across folders — purge those too. */
-        if (purge.length == 0) {
-            for (uint i = 0; i < uids.length; i++) {
-                if (trash_camel.get_message_info (uids[i]) != null)
-                    purge.add (uids[i]);
-            }
+        /* M365 often keeps the same Graph id across folders. */
+        for (uint i = 0; i < uids.length; i++) {
+            var id = uids[i];
+            if (id == null || id.length == 0 || seen.contains (id))
+                continue;
+            if (trash_camel.get_message_info (id) == null)
+                continue;
+            seen.set (id, 1);
+            purge.add (id);
         }
+
         if (purge.length == 0) {
             for (uint i = 0; i < uids.length; i++)
                 drop_body (account, junk, uids[i]);
             apply_camel_counts (junk, junk_camel);
-            Utils.sync_log ("purge Junk “%s” %u messages (moved to Trash)".printf (junk.name, uids.length));
-            return;
+            Utils.sync_log (
+                "purge Junk “%s” %u messages — moved to Trash but UIDs not in Trash summary yet".printf (
+                    junk.name,
+                    uids.length
+                )
+            );
+            throw new IOError.FAILED (
+                _("Junk was emptied into Trash on the server, but permanent delete could not finish. Open Trash (or Update Folder) to align the local list.")
+            );
         }
 
         trash_camel.freeze ();
@@ -3420,6 +4190,8 @@ public class Mail.MailSession : Camel.Session {
         for (uint i = 0; i < uids.length; i++)
             drop_body (account, junk, uids[i]);
         try {
+            /* synchronize on TYPE_TRASH → Graph permanent delete for these UIDs.
+             * do_expunge=false: Trash.expunge would wipe the entire Trash. */
             yield push_deleted_and_expunge (
                 trash_camel,
                 trash_camel.get_full_display_name () ?? trash_camel.get_display_name () ?? "Trash",
@@ -3434,6 +4206,7 @@ public class Mail.MailSession : Camel.Session {
             Utils.sync_log ("purge Junk via Trash — already gone on server");
         }
         apply_camel_counts (junk, junk_camel);
+        Utils.sync_log ("purge Junk “%s” %u messages (permanent via Trash)".printf (junk.name, purge.length));
     }
 
     public async void set_folder_seen (Account account, Folder folder, bool seen) throws Error {
@@ -4422,7 +5195,7 @@ public class Mail.MailSession : Camel.Session {
         string uid
     ) {
         var key = body_key (account, from, uid);
-        this.body_cache.remove (key);
+        forget_body_cache_key (key);
         yield drop_disk_body (source_folder, uid, null);
     }
 
@@ -4881,12 +5654,35 @@ public class Mail.MailSession : Camel.Session {
     }
 
     private async void capture_local_body (Account account, Folder folder, string uid, Camel.Folder camel_folder) {
-        if (this.body_cache.contains (body_key (account, folder, uid)))
+        var key = body_key (account, folder, uid);
+        if (this.body_cache.contains (key)) {
+            touch_body_cache_key (key);
             return;
+        }
 
         var mime = message_from_local_cache (camel_folder, uid);
-        if (mime != null)
-            this.body_cache.set (body_key (account, folder, uid), MessageContent.from_mime (uid, mime));
+        if (mime != null) {
+            var content = MessageContent.from_mime (uid, mime);
+            remember_body_cache (key, content);
+            index_cached_body (account, folder, uid, content.plain_text);
+        }
+    }
+
+    /* Extract folded text once; do not pin the MIME in Letter RAM. */
+    private void index_disk_body_if_needed (
+        Account account,
+        Folder folder,
+        Camel.Folder camel_folder,
+        string uid
+    ) {
+        var account_uid = account.source_uid ?? account.uid;
+        if (this.body_text_index.has (account_uid, folder.full_name, uid))
+            return;
+        var mime = message_from_local_cache (camel_folder, uid);
+        if (mime == null)
+            return;
+        var content = MessageContent.from_mime (uid, mime);
+        this.body_text_index.add (account_uid, folder.full_name, uid, content.plain_text);
     }
 
     private static bool is_missing_on_server (Error error) {
@@ -4932,7 +5728,7 @@ public class Mail.MailSession : Camel.Session {
     }
 
     private void drop_body (Account account, Folder folder, string uid) {
-        this.body_cache.remove (body_key (account, folder, uid));
+        forget_body_cache_key (body_key (account, folder, uid));
     }
 
     public static string mail_data_root () {
@@ -5048,7 +5844,7 @@ public class Mail.MailSession : Camel.Session {
                 keys.add (key);
         });
         for (uint i = 0; i < keys.length; i++)
-            this.body_cache.remove (keys[i]);
+            forget_body_cache_key (keys[i]);
     }
 
     private static uint64 directory_size (string path) {
@@ -5256,7 +6052,7 @@ public class Mail.MailSession : Camel.Session {
                 ? uid
                 : "local-sent-%lld".printf (new DateTime.now_utc ().to_unix ());
             var content = MessageContent.from_mime (id, mime);
-            this.body_cache.set (body_key (account, sent_folder, id), content);
+            remember_body_cache (body_key (account, sent_folder, id), content);
             sent = message_from_mime (id, mime, sent_folder, content.plain_text ?? body);
         }
 
@@ -5311,7 +6107,7 @@ public class Mail.MailSession : Camel.Session {
         if (uid == null || uid.length == 0)
             uid = "local-draft-%lld".printf (new DateTime.now_utc ().to_unix ());
         var content = MessageContent.from_mime (uid, mime);
-        this.body_cache.set (body_key (account, drafts, uid), content);
+        remember_body_cache (body_key (account, drafts, uid), content);
         var draft = message_from_mime (uid, mime, drafts, content.plain_text ?? body);
 
         /* Replace previous revision: purge locally and push to the server now.

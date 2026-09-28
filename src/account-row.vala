@@ -161,7 +161,10 @@ public class Mail.MessageRow : Gtk.Box {
     construct {
         add_css_class ("message-row");
         hexpand = true;
-        valign = Gtk.Align.CENTER;
+        vexpand = false;
+        valign = Gtk.Align.FILL;
+        /* Stable row height for Gtk.ListView recycling. */
+        height_request = 72;
 
         this.unread_indicator = new Gtk.Box (Gtk.Orientation.VERTICAL, 0) {
             valign = Gtk.Align.CENTER,

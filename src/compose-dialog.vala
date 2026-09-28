@@ -1763,6 +1763,9 @@ public class Mail.ComposeHtmlView : Gtk.Box {
 
     private WebKit.NetworkSession network_session;
     private WebKit.WebView webview;
+    /* Set once the editor document is loaded. Cleared when the window is
+     * destroyed so the compose renderer exits with the reply. */
+    private bool web_renderer_used;
     private Gtk.Stack stack;
     private SimpleAction image_size_small;
     private SimpleAction image_size_medium;
@@ -1883,6 +1886,19 @@ public class Mail.ComposeHtmlView : Gtk.Box {
             build_document (quoted, forward_quote, resend, signature_html, initial_html),
             "about:blank"
         );
+        this.web_renderer_used = true;
+    }
+
+    public override void dispose () {
+        release_web_renderer ();
+        base.dispose ();
+    }
+
+    private void release_web_renderer () {
+        if (!this.web_renderer_used)
+            return;
+        this.web_renderer_used = false;
+        this.webview.terminate_web_process ();
     }
 
     private void add_file_drop_target () {

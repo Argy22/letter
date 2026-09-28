@@ -1,0 +1,48 @@
+--- a/src/Microsoft365/camel/camel-m365-folder.c	2026-09-26 21:22:01.168453087 +0200
++++ b/src/Microsoft365/camel/camel-m365-folder.c	2026-09-26 21:22:01.210057174 +0200
+@@ -952,19 +952,32 @@
+ 
+ 	g_clear_pointer (&sdd.known_uids, g_hash_table_unref);
+ 
+-	if (sdd.removed_uids) {
+-		camel_folder_summary_remove_uids (folder_summary, sdd.removed_uids);
+-
+-		g_ptr_array_unref (sdd.removed_uids);
+-	}
+-
+-	m365_folder_save_summary (m365_folder);
+-
+-	if (sdd.changes) {
+-		if (camel_folder_change_info_changed (sdd.changes))
+-			camel_folder_changed (folder, sdd.changes);
+-
+-		camel_folder_change_info_free (sdd.changes);
++	/* Removals and save_summary used to run even when the delta walk
++	 * failed. That committed a partial Online Archive summary and the
++	 * next refresh restarted tip-first instead of from the delta link. */
++	if (success) {
++		if (sdd.removed_uids) {
++			camel_folder_summary_remove_uids (folder_summary, sdd.removed_uids);
++			g_ptr_array_unref (sdd.removed_uids);
++		}
++
++		m365_folder_save_summary (m365_folder);
++
++		if (sdd.changes) {
++			if (camel_folder_change_info_changed (sdd.changes))
++				camel_folder_changed (folder, sdd.changes);
++			camel_folder_change_info_free (sdd.changes);
++		}
++	} else {
++		if (sdd.removed_uids)
++			g_ptr_array_unref (sdd.removed_uids);
++		if (sdd.changes)
++			camel_folder_change_info_free (sdd.changes);
++		/* Token-expired path clears the in-memory cursor before the
++		 * full walk. Put it back when that walk does not finish. */
++		camel_m365_folder_summary_set_delta_link (m365_folder_summary, curr_delta_link);
++		g_warning ("M365 refresh_info for '%s' did not finish; summary and delta link left unchanged",
++			camel_folder_get_display_name (folder));
+ 	}
+ 
+ 	if (local_error) {

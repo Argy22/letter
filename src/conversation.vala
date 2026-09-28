@@ -290,6 +290,75 @@ public class Mail.Conversation : Object {
             }
         }
 
+        return conversations_from_sets (primary, all, sets, primary_keys);
+    }
+
+    /* Same as group, with Idle yields so Archive-sized lists do not freeze UI. */
+    public static async GenericArray<Conversation> group_async (
+        GenericArray<Message> primary,
+        GenericArray<Message>? extras
+    ) {
+        var all = new GenericArray<Message> ();
+        var primary_keys = new HashTable<string, uint8> (str_hash, str_equal);
+        for (uint i = 0; i < primary.length; i++) {
+            primary_keys.set (message_key (primary[i]), 1);
+            all.add (primary[i]);
+        }
+        if (extras != null) {
+            for (uint i = 0; i < extras.length; i++) {
+                var message = extras[i];
+                if (primary_keys.contains (message_key (message)))
+                    continue;
+                all.add (message);
+            }
+        }
+
+        var n = all.length;
+        var sets = new ThreadUnion ((int) n);
+        var hash_owner = new HashTable<string, int> (str_hash, str_equal);
+        var key_owner = new HashTable<string, int> (str_hash, str_equal);
+
+        for (int i = 0; i < (int) n; i++) {
+            var message = all[i];
+            var subject = normalize_subject (message.subject);
+            touch_hash (sets, hash_owner, message.msgid_hash, subject, i);
+            var refs = message.msgid_refs;
+            if (refs != null) {
+                for (uint r = 0; r < refs.length; r++)
+                    touch_hash (sets, hash_owner, refs[r], subject, i);
+            }
+            touch_key (sets, key_owner, conversation_subject_key (message), i);
+            if (i % 64 == 63) {
+                Idle.add (group_async.callback);
+                yield;
+            }
+        }
+
+        for (int i = 0; i < (int) n; i++) {
+            if (!all[i].is_placeholder)
+                continue;
+            for (int j = 0; j < (int) n; j++) {
+                if (i == j)
+                    continue;
+                if (same_outgoing_send (all[i], all[j]))
+                    sets.merge (i, j);
+            }
+            if (i % 32 == 31) {
+                Idle.add (group_async.callback);
+                yield;
+            }
+        }
+
+        return conversations_from_sets (primary, all, sets, primary_keys);
+    }
+
+    private static GenericArray<Conversation> conversations_from_sets (
+        GenericArray<Message> primary,
+        GenericArray<Message> all,
+        ThreadUnion sets,
+        HashTable<string, uint8> primary_keys
+    ) {
+        var n = all.length;
         var buckets = new HashTable<string, GenericArray<Message>> (str_hash, str_equal);
         for (int i = 0; i < (int) n; i++) {
             var key = sets.find (i).to_string ();

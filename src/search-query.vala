@@ -12,10 +12,24 @@ public class Mail.SearchClause : Object {
 
 public class Mail.SearchQuery : Object {
     public GenericArray<SearchClause> clauses = new GenericArray<SearchClause> ();
+    /* When true, TEXT clauses match if any token hits (FROM/TO still AND). */
+    public bool match_any { get; set; default = false; }
 
     public bool is_empty {
         get {
             return this.clauses.length == 0;
+        }
+    }
+
+    public uint text_clause_count {
+        get {
+            uint n = 0;
+            for (uint i = 0; i < this.clauses.length; i++) {
+                if (this.clauses[i].kind == SearchFilterKind.TEXT
+                    && this.clauses[i].folded.length > 0)
+                    n++;
+            }
+            return n;
         }
     }
 
@@ -33,6 +47,8 @@ public class Mail.SearchQuery : Object {
                 builder.append_c (':');
                 builder.append (clause.folded);
             }
+            if (this.match_any)
+                builder.append ("|any");
             return builder.str;
         }
     }
@@ -66,6 +82,7 @@ public class Mail.SearchQuery : Object {
 
     public SearchQuery copy () {
         var clone = new SearchQuery ();
+        clone.match_any = this.match_any;
         for (uint i = 0; i < this.clauses.length; i++) {
             var clause = this.clauses[i];
             clone.clauses.add (new SearchClause () {
@@ -208,6 +225,8 @@ public class Mail.SearchQuery : Object {
             text_hay = blob.str;
         }
 
+        var has_text = false;
+        var text_ok = false;
         for (uint i = 0; i < query.clauses.length; i++) {
             var clause = query.clauses[i];
             switch (clause.kind) {
@@ -220,8 +239,46 @@ public class Mail.SearchQuery : Object {
                         return false;
                     break;
                 case SearchFilterKind.TEXT:
-                    if (!text_hay.contains (clause.folded))
+                    has_text = true;
+                    var hit = text_hay.contains (clause.folded);
+                    if (query.match_any) {
+                        if (hit)
+                            text_ok = true;
+                    } else if (!hit) {
                         return false;
+                    } else {
+                        text_ok = true;
+                    }
+                    break;
+            }
+        }
+        return !has_text || text_ok;
+    }
+
+    /* FROM/TO only — TEXT is already satisfied by a body-index hit. */
+    public static bool matches_header_filters (Message message, SearchQuery query) {
+        if (query.is_empty)
+            return true;
+
+        var from_hay = message.from_blob != null && message.from_blob.length > 0
+            ? message.from_blob
+            : haystack (message.from);
+        var to_hay = message.to_blob != null && message.to_blob.length > 0
+            ? message.to_blob
+            : to_haystack (message);
+
+        for (uint i = 0; i < query.clauses.length; i++) {
+            var clause = query.clauses[i];
+            switch (clause.kind) {
+                case SearchFilterKind.FROM:
+                    if (!from_hay.contains (clause.folded))
+                        return false;
+                    break;
+                case SearchFilterKind.TO:
+                    if (!to_hay.contains (clause.folded))
+                        return false;
+                    break;
+                default:
                     break;
             }
         }

@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: letter\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-17 11:23+0200\n"
+"POT-Creation-Date: 2026-09-25 16:50+0200\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -35,7 +35,7 @@ msgid "email;mail;imap;google;outlook;exchange;"
 msgstr ""
 
 #: data/io.github.stalvatero.Letter.desktop.in.in:20 src/window.blp:242
-#: src/compose-dialog.vala:79
+#: src/compose-dialog.vala:77
 msgid "New Message"
 msgstr ""
 
@@ -59,13 +59,22 @@ msgstr ""
 
 #: data/io.github.stalvatero.Letter.metainfo.xml.in.in:61
 msgid ""
+"Fifth 1.0 release candidate. Brazilian Portuguese translation, Debian/"
+"Ubuntu .deb on Releases beside Flatpak, reliable list selection after "
+"emptying a conversation from the current folder, and compose no longer "
+"autosaves drafts every two minutes (avoids duplicate drafts on Microsoft "
+"365)."
+msgstr ""
+
+#: data/io.github.stalvatero.Letter.metainfo.xml.in.in:72
+msgid ""
 "Fourth 1.0 release candidate. Recipient chips offer Write to and Copy Email; "
 "compose gains high priority, Paste and Match Style, and Space to commit "
 "addresses. Open and save .eml files, bulk actions in multi-select, quieter "
 "Archive/Sent sync, Draft tip refresh, and aggregate notification sound."
 msgstr ""
 
-#: data/io.github.stalvatero.Letter.metainfo.xml.in.in:72
+#: data/io.github.stalvatero.Letter.metainfo.xml.in.in:83
 msgid ""
 "Third 1.0 release candidate. Soft archive, trash, move, and flags stay local "
 "until the sync timer, F5, startup, or quit, with an on-disk mutation "
@@ -75,7 +84,7 @@ msgid ""
 "evolution-ews stack for Graph mail in the sandbox."
 msgstr ""
 
-#: data/io.github.stalvatero.Letter.metainfo.xml.in.in:85
+#: data/io.github.stalvatero.Letter.metainfo.xml.in.in:96
 msgid ""
 "Second 1.0 release candidate. Completes the German UI translation, fixes "
 "Microsoft 365 bookmarks against Outlook Flag (not High Importance), shows a "
@@ -84,14 +93,14 @@ msgid ""
 "latency fixes from after rc.1."
 msgstr ""
 
-#: data/io.github.stalvatero.Letter.metainfo.xml.in.in:96
+#: data/io.github.stalvatero.Letter.metainfo.xml.in.in:107
 msgid ""
 "First 1.0 release candidate. Daily-use mail with cache-first sync, undo for "
 "archive, move and trash, Inbox on every startup, and an experimental Flatpak "
 "bundle. Feedback and remaining translations welcome before 1.0.0."
 msgstr ""
 
-#: data/io.github.stalvatero.Letter.metainfo.xml.in.in:106
+#: data/io.github.stalvatero.Letter.metainfo.xml.in.in:117
 msgid ""
 "First public beta: reading, composing, search, notifications, and GNOME "
 "Online Accounts."
@@ -137,7 +146,7 @@ msgstr ""
 msgid "Letter shortcuts"
 msgstr ""
 
-#: src/application.vala:451 src/window.blp:287 src/search-field.vala:16
+#: src/application.vala:451 src/window.blp:287 src/search-field.vala:17
 msgid "Search"
 msgstr ""
 
@@ -145,21 +154,21 @@ msgstr ""
 msgid "New message"
 msgstr ""
 
-#: src/application.vala:453 src/window.vala:8192 src/message-reader.vala:1212
+#: src/application.vala:453 src/window.vala:10027 src/message-reader.vala:1212
 #: src/message-reader.vala:1278
 msgid "Reply"
 msgstr ""
 
-#: src/application.vala:454 src/window.vala:8194 src/message-reader.vala:1213
+#: src/application.vala:454 src/window.vala:10029 src/message-reader.vala:1213
 msgid "Reply All"
 msgstr ""
 
-#: src/application.vala:455 src/window.vala:8195 src/message-reader.vala:1214
+#: src/application.vala:455 src/window.vala:10030 src/message-reader.vala:1214
 msgid "Forward"
 msgstr ""
 
-#: src/application.vala:456 src/application.vala:525 src/window.vala:315
-#: src/window.vala:5189 src/window.vala:8203 src/window.vala:8269
+#: src/application.vala:456 src/application.vala:525 src/window.vala:353
+#: src/window.vala:6522 src/window.vala:10038 src/window.vala:10104
 #: src/notifier.vala:104 src/message-reader.vala:1222
 msgid "Archive"
 msgstr ""
@@ -168,25 +177,25 @@ msgstr ""
 msgid "Mark as unread"
 msgstr ""
 
-#: src/application.vala:458 src/window.vala:8219 src/message-reader.vala:1235
+#: src/application.vala:458 src/window.vala:10054 src/message-reader.vala:1235
 #: src/message-reader.vala:1306
 msgid "Bookmark"
 msgstr ""
 
-#: src/application.vala:459 src/application.vala:530 src/window.vala:317
-#: src/window.vala:5209 src/window.vala:6742 src/window.vala:8231
-#: src/window.vala:8281 src/notifier.vala:105 src/message-reader.vala:1224
-#: src/compose-dialog.vala:2466 src/signature-editor.vala:218
+#: src/application.vala:459 src/application.vala:530 src/window.vala:355
+#: src/window.vala:6542 src/window.vala:8123 src/window.vala:10066
+#: src/window.vala:10116 src/notifier.vala:105 src/message-reader.vala:1224
+#: src/compose-dialog.vala:2417 src/signature-editor.vala:218
 #: src/signature-editor.vala:264 src/message-window.vala:395
 msgid "Delete"
 msgstr ""
 
-#: src/application.vala:460 src/window.vala:6919
+#: src/application.vala:460 src/window.vala:8313
 msgid "Undo"
 msgstr ""
 
-#: src/application.vala:461 src/window.vala:8223 src/message-reader.vala:1245
-#: src/compose-dialog.vala:116 src/eml-viewer.vala:39
+#: src/application.vala:461 src/window.vala:10058 src/message-reader.vala:1245
+#: src/compose-dialog.vala:114 src/eml-viewer.vala:39
 msgid "Print"
 msgstr ""
 
@@ -214,628 +223,654 @@ msgstr ""
 msgid "Toggle sidebar"
 msgstr ""
 
-#: src/window.vala:302
+#: src/window.vala:340
 msgid "Messages in this conversation"
 msgstr ""
 
-#: src/window.vala:316 src/window.vala:5194 src/window.vala:7435
-#: src/window.vala:8201 src/window.vala:8267 src/message-reader.vala:1223
+#: src/window.vala:354 src/window.vala:6527 src/window.vala:8930
+#: src/window.vala:10036 src/window.vala:10102 src/message-reader.vala:1223
 msgid "Move"
 msgstr ""
 
-#: src/window.vala:431 src/window.vala:2459 src/window.vala:2646
+#: src/window.vala:486 src/window.vala:3336 src/window.vala:3673
 msgid "Search Results"
 msgstr ""
 
-#: src/window.vala:437
+#: src/window.vala:492
 msgid "Close Search"
 msgstr ""
 
-#: src/window.vala:461 src/window.vala:2860
+#: src/window.vala:517 src/window.vala:3916
 msgid "Showing conversations"
 msgstr ""
 
-#: src/window.vala:462 src/window.vala:2861 src/window.blp:278
+#: src/window.vala:518 src/window.vala:3917 src/window.blp:278
 msgid "Group by conversation"
 msgstr ""
 
-#: src/window.vala:1217
+#: src/window.vala:526
+msgid "Chips and Enter run search."
+msgstr ""
+
+#: src/window.vala:1696
 #, c-format
 msgid "Sent “%s”"
 msgstr ""
 
-#: src/window.vala:1223
+#: src/window.vala:1703
 #, c-format
 msgid "Could not send “%s”: %s"
 msgstr ""
 
-#: src/window.vala:1226 src/window.vala:3990 src/window.vala:5369
+#: src/window.vala:1707 src/window.vala:5087 src/window.vala:6705
 msgid "Outbox"
 msgstr ""
 
-#: src/window.vala:1304 src/window.vala:4069 src/window.vala:8165
+#: src/window.vala:1785 src/window.vala:5166 src/window.vala:10000
 msgid "Sending…"
 msgstr ""
 
-#: src/window.vala:2093
+#: src/window.vala:2800
 msgid "Checking folders…"
 msgstr ""
 
-#: src/window.vala:2149
+#: src/window.vala:2863
 #, c-format
 msgid "Updating “%s” from server…"
 msgstr ""
 
-#: src/window.vala:2150 src/window.vala:2204
+#: src/window.vala:2864 src/window.vala:2997
 #, c-format
 msgid "Updating “%s”…"
 msgstr ""
 
-#: src/window.vala:2228
+#: src/window.vala:3021
 #, c-format
 msgid "Downloading messages in “%s”…"
 msgstr ""
 
-#: src/window.vala:2528 src/recipient-editor.vala:192
-msgid "Searching"
+#: src/window.vala:3371
+msgid "Searching…"
 msgstr ""
 
-#: src/window.vala:2529
-msgid "Looking in every folder…"
-msgstr ""
-
-#: src/window.vala:2539
-msgid "Searching remaining folders…"
-msgstr ""
-
-#: src/window.vala:2648 src/window.vala:5521
+#: src/window.vala:3675 src/window.vala:6887
 #, c-format
 msgid "%d match"
 msgid_plural "%d matches"
 msgstr[0] ""
 msgstr[1] ""
 
-#: src/window.vala:2657
+#: src/window.vala:3681
+msgid ""
+"Results include subject, from, to, and preview from Letter’s index, plus "
+"bodies already downloaded to this device."
+msgstr ""
+
+#: src/window.vala:3688
 msgid "No Matches"
 msgstr ""
 
-#: src/window.vala:2658
-msgid "No messages in any folder match the search."
+#: src/window.vala:3689
+msgid ""
+"No cached messages match. Download more of the mailbox (or widen the body "
+"window in Preferences) and try again."
 msgstr ""
 
-#: src/window.vala:2842
+#: src/window.vala:3898
 msgid "Showing unread messages"
 msgstr ""
 
-#: src/window.vala:2843 src/window.blp:268
+#: src/window.vala:3899 src/window.blp:268
 msgid "Show unread only"
 msgstr ""
 
-#: src/window.vala:2958 src/window.vala:3112 src/window.vala:3127
-#: src/window.vala:3130 src/window.vala:3222 src/window.vala:3225
-#: src/window.vala:3452
+#: src/window.vala:4014 src/window.vala:4168 src/window.vala:4183
+#: src/window.vala:4186 src/window.vala:4278 src/window.vala:4281
+#: src/window.vala:4508
 msgid "Offline"
 msgstr ""
 
-#: src/window.vala:3088
+#: src/window.vala:4144
 msgid "Hide account list"
 msgstr ""
 
-#: src/window.vala:3089
+#: src/window.vala:4145
 msgid "Show account list"
 msgstr ""
 
-#: src/window.vala:3113
+#: src/window.vala:4169
 msgid "Offline — enable the service in Online Accounts settings"
 msgstr ""
 
-#: src/window.vala:3128 src/window.vala:3223
+#: src/window.vala:4184 src/window.vala:4279
 msgid "Enable the mail service in Online Accounts settings"
 msgstr ""
 
-#: src/window.vala:3136
+#: src/window.vala:4192
 msgid "Evolution Data Server Unavailable"
 msgstr ""
 
-#: src/window.vala:3137
+#: src/window.vala:4193
 msgid "Letter needs the same data server used by Calendar and Contacts."
 msgstr ""
 
-#: src/window.vala:3149 src/window.vala:3191 src/window.vala:3282
+#: src/window.vala:4205 src/window.vala:4247 src/window.vala:4338
 msgid "Loading Folders"
 msgstr ""
 
-#: src/window.vala:3153 src/window.vala:3197 src/window.blp:329
+#: src/window.vala:4209 src/window.vala:4253 src/window.blp:329
 msgid "Select a Folder"
 msgstr ""
 
-#: src/window.vala:3154 src/window.vala:3198 src/window.blp:330
+#: src/window.vala:4210 src/window.vala:4254 src/window.blp:330
 msgid "Messages from the selected folder will appear here."
 msgstr ""
 
-#: src/window.vala:3161
+#: src/window.vala:4217
 #, c-format
 msgid "Preparing mail for “%s”…"
 msgstr ""
 
-#: src/window.vala:3169
+#: src/window.vala:4225
 msgid "Mail Account Not Ready"
 msgstr ""
 
-#: src/window.vala:3170
+#: src/window.vala:4226
 msgid ""
 "Evolution Data Server has not published this account yet. Try again in a "
 "moment."
 msgstr ""
 
-#: src/window.vala:3193
+#: src/window.vala:4249
 #, c-format
 msgid "Connecting to “%s”…"
 msgstr ""
 
-#: src/window.vala:3208
+#: src/window.vala:4264
 msgid "No Folders"
 msgstr ""
 
-#: src/window.vala:3209
+#: src/window.vala:4265
 msgid "The account did not publish any subscribed folders."
 msgstr ""
 
-#: src/window.vala:3229
+#: src/window.vala:4285
 msgid "Could Not Load Folders"
 msgstr ""
 
-#: src/window.vala:3284
+#: src/window.vala:4340
 #, c-format
 msgid "Waiting for folders from “%s”…"
 msgstr ""
 
-#: src/window.vala:3465
+#: src/window.vala:4521
 msgid "Loading local cache…"
 msgstr ""
 
-#: src/window.vala:3677
+#: src/window.vala:4735
 msgid "Gmail Labels"
 msgstr ""
 
-#: src/window.vala:3678
+#: src/window.vala:4736
 msgid ""
 "“[Gmail]” groups labels such as Important and Starred. Open one of those "
 "folders to read mail."
 msgstr ""
 
-#: src/window.vala:3703
+#: src/window.vala:4790
 msgid "Loading Messages"
 msgstr ""
 
-#: src/window.vala:3704
+#: src/window.vala:4791
 #, c-format
 msgid "Reading the local list for “%s”…"
 msgstr ""
 
-#: src/window.vala:3832
-msgid "No Bookmarks"
-msgstr ""
-
-#: src/window.vala:3833
+#: src/window.vala:4923
 msgid ""
 "Bookmark a message to collect it here. Bookmarks sync with the flag used by "
 "Outlook, Gmail, and IMAP."
 msgstr ""
 
-#: src/window.vala:3857
+#: src/window.vala:4928
+msgid ""
+"This system’s Microsoft 365 mail provider is older than evolution-ews 3.58, "
+"so Outlook Flags are not imported into Letter. Use the Flatpak build "
+"(bundles 3.58+) or upgrade evolution-ews. Bookmarks you set here still work "
+"locally."
+msgstr ""
+
+#: src/window.vala:4931
+msgid "No Bookmarks"
+msgstr ""
+
+#: src/window.vala:4954
 msgid "No Unread Bookmarks"
 msgstr ""
 
-#: src/window.vala:3858 src/window.vala:4803 src/window.vala:4818
-#: src/window.vala:7178
+#: src/window.vala:4955 src/window.vala:6101 src/window.vala:6116
+#: src/window.vala:8577
 msgid "Turn off the unread filter to see the rest of this folder."
 msgstr ""
 
-#: src/window.vala:3900
+#: src/window.vala:4997
 msgid "Bookmarks"
 msgstr ""
 
-#: src/window.vala:4070
+#: src/window.vala:5167
 msgid "Waiting to send"
 msgstr ""
 
-#: src/window.vala:4095
+#: src/window.vala:5192
 msgid "Outbox Empty"
 msgstr ""
 
-#: src/window.vala:4096
+#: src/window.vala:5193
 msgid "Messages you send are kept here until delivery succeeds."
 msgstr ""
 
-#: src/window.vala:4707
+#: src/window.vala:5942
 #, c-format
 msgid "%u more new message"
 msgid_plural "%u more new messages"
 msgstr[0] ""
 msgstr[1] ""
 
-#: src/window.vala:4735 src/window.vala:5329 src/window.vala:6002
-#: src/conversation.vala:162 src/conversation.vala:360
-#: src/conversation.vala:398 src/mail-session.vala:1413
-#: src/mail-session.vala:1483 src/mail-session.vala:5355
-#: src/mail-session.vala:5401 src/mail-session.vala:6155
-#: src/message-reader.vala:553 src/utils.vala:336 src/utils.vala:2206
-#: src/utils.vala:2213 src/outbox-store.vala:27 src/message-window.vala:281
+#: src/window.vala:5970 src/window.vala:6665 src/window.vala:7383
+#: src/conversation.vala:162 src/conversation.vala:429
+#: src/conversation.vala:467 src/mail-session.vala:1706
+#: src/mail-session.vala:1776 src/mail-session.vala:5947
+#: src/mail-session.vala:5993 src/mail-session.vala:6747
+#: src/message-reader.vala:553 src/utils.vala:372 src/utils.vala:2291
+#: src/utils.vala:2298 src/outbox-store.vala:27 src/message-window.vala:281
 #: src/message-window.vala:297
 msgid "(No subject)"
 msgstr ""
 
-#: src/window.vala:4797 src/window.vala:7182 src/window.vala:8102
+#: src/window.vala:6054
+msgid "Grouping Conversations"
+msgstr ""
+
+#: src/window.vala:6055
+#, c-format
+msgid "Building threads for “%s”…"
+msgstr ""
+
+#: src/window.vala:6095 src/window.vala:8581 src/window.vala:9928
 msgid "No Messages"
 msgstr ""
 
-#: src/window.vala:4798 src/window.vala:7183 src/window.vala:8103
+#: src/window.vala:6096 src/window.vala:8582 src/window.vala:9929
 msgid "This folder is empty."
 msgstr ""
 
-#: src/window.vala:4802 src/window.vala:4817 src/window.vala:7177
+#: src/window.vala:6100 src/window.vala:6115 src/window.vala:8576
 msgid "No Unread Messages"
 msgstr ""
 
-#: src/window.vala:5164
+#: src/window.vala:6497
 #, c-format
 msgid "%u conversation selected"
 msgid_plural "%u conversations selected"
 msgstr[0] ""
 msgstr[1] ""
 
-#: src/window.vala:5199 src/window.vala:8215 src/window.vala:8274
+#: src/window.vala:6532 src/window.vala:10050 src/window.vala:10109
 #: src/message-reader.vala:1228 src/message-reader.vala:1293
 msgid "Mark as Read"
 msgstr ""
 
-#: src/window.vala:5204 src/window.vala:8217 src/window.vala:8276
+#: src/window.vala:6537 src/window.vala:10052 src/window.vala:10111
 #: src/message-reader.vala:1289
 msgid "Mark as Unread"
 msgstr ""
 
-#: src/window.vala:5404
+#: src/window.vala:6768
 msgid "Update in progress…"
 msgstr ""
 
-#: src/window.vala:5433
+#: src/window.vala:6769
+msgid "Aligning mail cache…"
+msgstr ""
+
+#: src/window.vala:6799
 msgid "Loading message…"
 msgstr ""
 
-#: src/window.vala:5508
+#: src/window.vala:6874
 #, c-format
 msgid "%d unread"
 msgid_plural "%d unread"
 msgstr[0] ""
 msgstr[1] ""
 
-#: src/window.vala:5509
+#: src/window.vala:6875
 #, c-format
 msgid "%d message"
 msgid_plural "%d messages"
 msgstr[0] ""
 msgstr[1] ""
 
-#: src/window.vala:5551
+#: src/window.vala:6917
 msgid "Aligning local cache"
 msgstr ""
 
-#: src/window.vala:5552
+#: src/window.vala:6918
 #, c-format
 msgid ""
 "Loading “%s” to match the server. This can take a while on large mailboxes — "
 "please wait until the sync finishes."
 msgstr ""
 
-#: src/window.vala:5584 src/window.blp:344
+#: src/window.vala:6950 src/window.blp:344
 msgid "Select a Message"
 msgstr ""
 
-#: src/window.vala:5585 src/window.blp:345
+#: src/window.vala:6951 src/window.blp:345
 msgid "Choose a message from the list to read it."
 msgstr ""
 
-#: src/window.vala:5896 src/window.vala:5919
+#: src/window.vala:7277 src/window.vala:7300
 msgid "Evolution Data Server is unavailable."
 msgstr ""
 
-#: src/window.vala:5907 src/window.vala:5930
+#: src/window.vala:7288 src/window.vala:7311
 msgid "No account is configured to send mail."
 msgstr ""
 
-#: src/window.vala:6188 src/message-window.vala:209
+#: src/window.vala:7569 src/message-window.vala:209
 msgid "No Important folder was found for this account."
 msgstr ""
 
-#: src/window.vala:6430
+#: src/window.vala:7811
 msgid "No Junk folder was found for this account."
 msgstr ""
 
-#: src/window.vala:6441
+#: src/window.vala:7822
 msgid "No Inbox folder was found for this account."
 msgstr ""
 
-#: src/window.vala:6466
+#: src/window.vala:7847
 msgid "Could not save this message."
 msgstr ""
 
-#: src/window.vala:6483
+#: src/window.vala:7864
 msgid "Message saved."
 msgstr ""
 
-#: src/window.vala:6557 src/window.vala:6639 src/message-window.vala:371
+#: src/window.vala:7938 src/window.vala:8020 src/message-window.vala:371
 msgid "No Archive folder was found for this account."
 msgstr ""
 
-#: src/window.vala:6577
+#: src/window.vala:7958
 msgid "Removed from Outbox"
 msgstr ""
 
-#: src/window.vala:6734 src/message-window.vala:391
+#: src/window.vala:8115 src/message-window.vala:391
 msgid "Delete permanently?"
 msgstr ""
 
-#: src/window.vala:6735 src/message-window.vala:392
+#: src/window.vala:8116 src/message-window.vala:392
 msgid "This message will be permanently deleted. This cannot be undone."
 msgstr ""
 
-#: src/window.vala:6737
+#: src/window.vala:8118
 #, c-format
 msgid "Delete %u messages permanently?"
 msgstr ""
 
-#: src/window.vala:6738
+#: src/window.vala:8119
 msgid "These messages will be permanently deleted. This cannot be undone."
 msgstr ""
 
-#: src/window.vala:6741 src/window.vala:7434 src/window.vala:7969
-#: src/window.vala:8052 src/window.vala:8073 src/window.vala:8370
-#: src/window.vala:8408 src/window.vala:8596 src/window.vala:8652
-#: src/compose-dialog.vala:1663 src/preferences-dialog.vala:496
+#: src/window.vala:8122 src/window.vala:8929 src/window.vala:9463
+#: src/window.vala:9871 src/window.vala:9892 src/window.vala:10205
+#: src/window.vala:10243 src/window.vala:10431 src/window.vala:10487
+#: src/compose-dialog.vala:1614 src/preferences-dialog.vala:496
 #: src/signature-editor.vala:263 src/message-window.vala:394
 msgid "Cancel"
 msgstr ""
 
-#: src/window.vala:7015
+#: src/window.vala:8409
 msgid "Message moved to Trash"
 msgid_plural "Messages moved to Trash"
 msgstr[0] ""
 msgstr[1] ""
 
-#: src/window.vala:7022
+#: src/window.vala:8416
 msgid "Message marked as Junk"
 msgid_plural "Messages marked as Junk"
 msgstr[0] ""
 msgstr[1] ""
 
-#: src/window.vala:7031
+#: src/window.vala:8425
 msgid "Message archived"
 msgid_plural "Messages archived"
 msgstr[0] ""
 msgstr[1] ""
 
-#: src/window.vala:7037
+#: src/window.vala:8431
 #, c-format
 msgid "Message moved to “%s”"
 msgid_plural "Messages moved to “%s”"
 msgstr[0] ""
 msgstr[1] ""
 
-#: src/window.vala:7428
+#: src/window.vala:8923
 msgid "Choose where to move the selected messages."
 msgstr ""
 
-#: src/window.vala:7429
+#: src/window.vala:8924
 msgid "Choose where to move this message."
 msgstr ""
 
-#: src/window.vala:7430
+#: src/window.vala:8925
 msgid "Move to Folder"
 msgstr ""
 
-#: src/window.vala:7498 src/mail-session.vala:5153 src/mail-session.vala:5181
-#: src/mail-session.vala:5286 src/compose-dialog.vala:724
+#: src/window.vala:8993 src/mail-session.vala:5711 src/mail-session.vala:5739
+#: src/mail-session.vala:5844 src/compose-dialog.vala:661
 #: src/message-window.vala:344
 msgid "This account has no sending identity."
 msgstr ""
 
-#: src/window.vala:7913
+#: src/window.vala:9408
 msgid "New Subfolder…"
 msgstr ""
 
-#: src/window.vala:7915
+#: src/window.vala:9410
 msgid "Rename…"
 msgstr ""
 
-#: src/window.vala:7921 src/account-row.vala:117
+#: src/window.vala:9416 src/account-row.vala:117
 msgid "Expand"
 msgstr ""
 
-#: src/window.vala:7921 src/account-row.vala:117
+#: src/window.vala:9416 src/account-row.vala:117
 msgid "Collapse"
 msgstr ""
 
-#: src/window.vala:7928
+#: src/window.vala:9423
 msgid "Mark All as Read"
 msgstr ""
 
-#: src/window.vala:7929
+#: src/window.vala:9424
 msgid "Mark All as Unread"
 msgstr ""
 
-#: src/window.vala:7931 src/window.vala:7970
+#: src/window.vala:9426 src/window.vala:9464
 msgid "Update Folder"
 msgstr ""
 
-#: src/window.vala:7936 src/window.vala:8074
+#: src/window.vala:9431 src/window.vala:9893
 msgid "Empty"
 msgstr ""
 
-#: src/window.vala:7938
+#: src/window.vala:9433
 msgid "Restore"
 msgstr ""
 
-#: src/window.vala:7939 src/window.vala:8653
+#: src/window.vala:9434 src/window.vala:10488
 msgid "Delete Permanently"
 msgstr ""
 
-#: src/window.vala:7941 src/window.vala:8597
+#: src/window.vala:9436 src/window.vala:10432
 msgid "Move to Trash"
 msgstr ""
 
-#: src/window.vala:7961
+#: src/window.vala:9455
 msgid "A folder update is already in progress."
 msgstr ""
 
-#: src/window.vala:7966
+#: src/window.vala:9460
 #, c-format
 msgid "Update “%s” from server?"
 msgstr ""
 
-#: src/window.vala:7967
+#: src/window.vala:9461
 msgid ""
-"Letter will try to fully align this folder’s local cache with the server. On "
-"large folders this can take up to five minutes. Sending stays in the Outbox "
-"and messages without a cached body wait until it finishes. Only the time "
-"limit can stop this update."
+"Letter asks the server for new message headers and merges them into its "
+"local index. Large folders run in timed slices; sending waits until the "
+"current slice finishes (the sync is not interrupted). Between slices Letter "
+"handles new mail and queued moves."
 msgstr ""
 
-#: src/window.vala:8021 src/window.vala:8053
+#: src/window.vala:9840 src/window.vala:9872
 msgid "Remove All Bookmarks"
 msgstr ""
 
-#: src/window.vala:8032
+#: src/window.vala:9851
 msgid "Retrying Outbox…"
 msgstr ""
 
-#: src/window.vala:8038
+#: src/window.vala:9857
 msgid "Send All Now"
 msgstr ""
 
-#: src/window.vala:8049
+#: src/window.vala:9868
 msgid "Remove all bookmarks?"
 msgstr ""
 
-#: src/window.vala:8050
+#: src/window.vala:9869
 msgid ""
 "Every bookmarked message in this account will lose its bookmark. The "
 "messages themselves will not be deleted."
 msgstr ""
 
-#: src/window.vala:8070
+#: src/window.vala:9889
 #, c-format
 msgid "Empty “%s”?"
 msgstr ""
 
-#: src/window.vala:8071
+#: src/window.vala:9890
 msgid ""
 "All messages in this folder will be permanently deleted. This cannot be "
 "undone."
 msgstr ""
 
-#: src/window.vala:8185 src/preferences-dialog.vala:428
+#: src/window.vala:10020 src/preferences-dialog.vala:428
 #: src/signature-editor.vala:212
 msgid "Edit"
 msgstr ""
 
-#: src/window.vala:8186
+#: src/window.vala:10021
 msgid "Send Now"
 msgstr ""
 
-#: src/window.vala:8188 src/message-reader.vala:1266 src/compose-dialog.vala:79
+#: src/window.vala:10023 src/message-reader.vala:1266
+#: src/compose-dialog.vala:77
 msgid "Edit Draft"
 msgstr ""
 
-#: src/window.vala:8190 src/message-reader.vala:1272
+#: src/window.vala:10025 src/message-reader.vala:1272
 msgid "Send Again"
 msgstr ""
 
-#: src/window.vala:8205
+#: src/window.vala:10040
 msgid "Not Spam"
 msgstr ""
 
-#: src/window.vala:8207
+#: src/window.vala:10042
 msgid "Mark as Spam"
 msgstr ""
 
-#: src/window.vala:8219 src/message-reader.vala:1305
+#: src/window.vala:10054 src/message-reader.vala:1305
 msgid "Remove Bookmark"
 msgstr ""
 
-#: src/window.vala:8222 src/message-reader.vala:1319
+#: src/window.vala:10057 src/message-reader.vala:1319
 msgid "Not Important"
 msgstr ""
 
-#: src/window.vala:8222 src/message-reader.vala:1239
+#: src/window.vala:10057 src/message-reader.vala:1239
 #: src/message-reader.vala:1320
 msgid "Mark as Important"
 msgstr ""
 
-#: src/window.vala:8225
+#: src/window.vala:10060
 msgid "Save as EML…"
 msgstr ""
 
-#: src/window.vala:8231
+#: src/window.vala:10066
 msgid "Cancel Send"
 msgstr ""
 
-#: src/window.vala:8367
+#: src/window.vala:10202
 msgid "New Subfolder"
 msgstr ""
 
-#: src/window.vala:8368
+#: src/window.vala:10203
 #, c-format
 msgid "The folder will be created under “%s”."
 msgstr ""
 
-#: src/window.vala:8371
+#: src/window.vala:10206
 msgid "Create"
 msgstr ""
 
-#: src/window.vala:8378 src/window.vala:8415 src/signature-editor.vala:30
+#: src/window.vala:10213 src/window.vala:10250 src/signature-editor.vala:30
 msgid "Name"
 msgstr ""
 
-#: src/window.vala:8405
+#: src/window.vala:10240
 msgid "Rename Folder"
 msgstr ""
 
-#: src/window.vala:8406
+#: src/window.vala:10241
 #, c-format
 msgid "Choose a new name for “%s”."
 msgstr ""
 
-#: src/window.vala:8409
+#: src/window.vala:10244
 msgid "Rename"
 msgstr ""
 
-#: src/window.vala:8443
+#: src/window.vala:10278
 #, c-format
 msgid "A folder named “%s” already exists."
 msgstr ""
 
-#: src/window.vala:8591
+#: src/window.vala:10426
 #, c-format
 msgid "Move “%s” to Trash?"
 msgstr ""
 
-#: src/window.vala:8593
+#: src/window.vala:10428
 msgid ""
 "The folder and its subfolders will be moved to Trash. You can restore them "
 "from there."
 msgstr ""
 
-#: src/window.vala:8594
+#: src/window.vala:10429
 msgid "The folder will be moved to Trash. You can restore it from there."
 msgstr ""
 
-#: src/window.vala:8649
+#: src/window.vala:10484
 #, c-format
 msgid "Delete “%s” permanently?"
 msgstr ""
 
-#: src/window.vala:8650
+#: src/window.vala:10485
 msgid "This cannot be undone."
 msgstr ""
 
@@ -976,15 +1011,15 @@ msgstr ""
 msgid "Address book enabled"
 msgstr ""
 
-#: src/account-row.vala:224 src/conversation.vala:721
+#: src/account-row.vala:227 src/conversation.vala:790
 msgid "Bookmarked"
 msgstr ""
 
-#: src/account-row.vala:231 src/conversation.vala:726
+#: src/account-row.vala:234 src/conversation.vala:795
 msgid "Important"
 msgstr ""
 
-#: src/account-row.vala:333 src/preferences-dialog.vala:83
+#: src/account-row.vala:336 src/preferences-dialog.vala:83
 msgid "Mark as read"
 msgstr ""
 
@@ -993,186 +1028,192 @@ msgstr ""
 msgid "%s, %s +%u"
 msgstr ""
 
-#: src/conversation.vala:716 src/mail-session.vala:6358
+#: src/conversation.vala:785 src/mail-session.vala:6950
 #: src/message-reader.vala:539
 msgid "Attachment"
 msgstr ""
 
-#: src/conversation.vala:752
+#: src/conversation.vala:821
 msgid "From me"
 msgstr ""
 
-#: src/conversation.vala:764
+#: src/conversation.vala:833
 msgid "Forwarded"
 msgstr ""
 
-#: src/conversation.vala:767
+#: src/conversation.vala:836
 msgid "Sent"
 msgstr ""
 
-#: src/conversation.vala:770
+#: src/conversation.vala:839
 msgid "Received"
 msgstr ""
 
-#: src/mail-session.vala:145 src/mail-session.vala:217
+#: src/mail-session.vala:156 src/mail-session.vala:228
 #, c-format
 msgid "No data source found for UID “%s”"
 msgstr ""
 
-#: src/mail-session.vala:191
+#: src/mail-session.vala:202
 #, c-format
 msgid "%s authentication failed"
 msgstr ""
 
-#: src/mail-session.vala:279
+#: src/mail-session.vala:290
 msgid ""
 "Password prompts are not implemented yet. Add the account in GNOME Online "
 "Accounts."
 msgstr ""
 
-#: src/mail-session.vala:286
+#: src/mail-session.vala:297
 msgid "This built-in local account is not used. Choose an online account."
 msgstr ""
 
-#: src/mail-session.vala:292
+#: src/mail-session.vala:303
 msgid "This account is not yet available to Evolution Data Server."
 msgstr ""
 
-#: src/mail-session.vala:298 src/mail-session.vala:5699
-#: src/mail-session.vala:5727
+#: src/mail-session.vala:309 src/mail-session.vala:6291
+#: src/mail-session.vala:6319
 #, c-format
 msgid "Mail source “%s” was not found."
 msgstr ""
 
-#: src/mail-session.vala:303 src/mail-session.vala:5732
+#: src/mail-session.vala:314 src/mail-session.vala:6324
 msgid "The account has no mail backend."
 msgstr ""
 
-#: src/mail-session.vala:458
+#: src/mail-session.vala:469
 msgctxt "Mail folder"
 msgid "Inbox"
 msgstr ""
 
-#: src/mail-session.vala:462
+#: src/mail-session.vala:473
 msgctxt "Mail folder"
 msgid "Drafts"
 msgstr ""
 
-#: src/mail-session.vala:465
+#: src/mail-session.vala:476
 msgctxt "Mail folder"
 msgid "Sent"
 msgstr ""
 
-#: src/mail-session.vala:468
+#: src/mail-session.vala:479
 msgctxt "Mail folder"
 msgid "Trash"
 msgstr ""
 
-#: src/mail-session.vala:471
+#: src/mail-session.vala:482
 msgctxt "Mail folder"
 msgid "Junk"
 msgstr ""
 
-#: src/mail-session.vala:474
+#: src/mail-session.vala:485
 msgctxt "Mail folder"
 msgid "All Mail"
 msgstr ""
 
-#: src/mail-session.vala:477
+#: src/mail-session.vala:488
 msgctxt "Mail folder"
 msgid "Starred"
 msgstr ""
 
-#: src/mail-session.vala:480
+#: src/mail-session.vala:491
 msgctxt "Mail folder"
 msgid "Important"
 msgstr ""
 
-#: src/mail-session.vala:483
+#: src/mail-session.vala:494
 msgctxt "Mail folder"
 msgid "Archive"
 msgstr ""
 
-#: src/mail-session.vala:486
+#: src/mail-session.vala:497
 msgctxt "Mail folder"
 msgid "Outbox"
 msgstr ""
 
-#: src/mail-session.vala:1897 src/mail-session.vala:1932
+#: src/mail-session.vala:2252 src/mail-session.vala:2289
 msgid "This message is still syncing with the server. Try again in a moment."
 msgstr ""
 
-#: src/mail-session.vala:1906 src/mail-session.vala:1941
+#: src/mail-session.vala:2261 src/mail-session.vala:2298
 msgid "Message could not be opened."
 msgstr ""
 
-#: src/mail-session.vala:3349
+#: src/mail-session.vala:3875
 msgid "Could not locate Trash folder"
 msgstr ""
 
-#: src/mail-session.vala:4815
+#: src/mail-session.vala:3956
+msgid ""
+"Junk was emptied into Trash on the server, but permanent delete could not "
+"finish. Open Trash (or Update Folder) to align the local list."
+msgstr ""
+
+#: src/mail-session.vala:5370
 msgid "Enter a folder name."
 msgstr ""
 
-#: src/mail-session.vala:4818
+#: src/mail-session.vala:5373
 msgid "Folder names cannot contain slashes."
 msgstr ""
 
-#: src/mail-session.vala:4910
+#: src/mail-session.vala:5468
 #, c-format
 msgid "“%s” is a local view, not a mail folder."
 msgstr ""
 
-#: src/mail-session.vala:4923
+#: src/mail-session.vala:5481
 #, c-format
 msgid "Folder “%s” was not found."
 msgstr ""
 
-#: src/mail-session.vala:4970
+#: src/mail-session.vala:5528
 msgid "This account has no local mail library."
 msgstr ""
 
-#: src/mail-session.vala:5088
+#: src/mail-session.vala:5646
 msgid "Refusing to delete files outside Letter’s library."
 msgstr ""
 
-#: src/mail-session.vala:5157
+#: src/mail-session.vala:5715
 msgid "Add at least one recipient."
 msgstr ""
 
-#: src/mail-session.vala:5713 src/mail-session.vala:5721
+#: src/mail-session.vala:6305 src/mail-session.vala:6313
 #, c-format
 msgid "No outgoing server is configured for “%s”."
 msgstr ""
 
-#: src/mail-session.vala:5812
+#: src/mail-session.vala:6404
 msgid "No Drafts folder was found for this account."
 msgstr ""
 
-#: src/mail-session.vala:5813
+#: src/mail-session.vala:6405
 msgid "No Sent folder was found for this account."
 msgstr ""
 
-#: src/mail-session.vala:6004
+#: src/mail-session.vala:6596
 #, c-format
 msgid ""
 "“%s” is not a valid email address. Group and personal names need a full "
 "address like name@example.com."
 msgstr ""
 
-#: src/mail-session.vala:6005
+#: src/mail-session.vala:6597
 msgid "recipient"
 msgstr ""
 
-#: src/mail-session.vala:6160 src/utils.vala:959 src/utils.vala:1525
+#: src/mail-session.vala:6752 src/utils.vala:1044 src/utils.vala:1610
 msgid "Unknown sender"
 msgstr ""
 
-#: src/mail-session.vala:6213
+#: src/mail-session.vala:6805
 msgid "This message has no readable content."
 msgstr ""
 
-#: src/mail-session.vala:6358
+#: src/mail-session.vala:6950
 msgid "Forwarded message"
 msgstr ""
 
@@ -1184,11 +1225,11 @@ msgstr ""
 msgid "Important message"
 msgstr ""
 
-#: src/message-reader.vala:120 src/utils.vala:1572
+#: src/message-reader.vala:120 src/utils.vala:1657
 msgid "To:"
 msgstr ""
 
-#: src/message-reader.vala:123 src/utils.vala:1580
+#: src/message-reader.vala:123 src/utils.vala:1665
 msgid "Cc:"
 msgstr ""
 
@@ -1204,8 +1245,8 @@ msgstr ""
 msgid "Could Not Open Message"
 msgstr ""
 
-#: src/message-reader.vala:528 src/compose-dialog.vala:1060
-#: src/compose-dialog.vala:1077
+#: src/message-reader.vala:528 src/compose-dialog.vala:995
+#: src/compose-dialog.vala:1012
 msgid "From"
 msgstr ""
 
@@ -1213,11 +1254,11 @@ msgstr ""
 msgid "Date"
 msgstr ""
 
-#: src/message-reader.vala:531 src/compose-dialog.vala:137
+#: src/message-reader.vala:531 src/compose-dialog.vala:135
 msgid "To"
 msgstr ""
 
-#: src/message-reader.vala:533 src/compose-dialog.vala:138
+#: src/message-reader.vala:533 src/compose-dialog.vala:136
 msgid "Cc"
 msgstr ""
 
@@ -1273,7 +1314,7 @@ msgstr[1] ""
 msgid "Preview"
 msgstr ""
 
-#: src/attachment-chip.vala:57 src/signature-editor.vala:19 src/utils.vala:383
+#: src/attachment-chip.vala:57 src/signature-editor.vala:19 src/utils.vala:419
 msgid "Save"
 msgstr ""
 
@@ -1287,35 +1328,31 @@ msgstr ""
 msgid "Remove “%s”"
 msgstr ""
 
-#: src/compose-dialog.vala:106
+#: src/compose-dialog.vala:104
 msgid "Send"
 msgstr ""
 
-#: src/compose-dialog.vala:115 src/compose-dialog.vala:671
+#: src/compose-dialog.vala:113 src/compose-dialog.vala:610
 msgid "Save Draft"
 msgstr ""
 
-#: src/compose-dialog.vala:139 src/compose-dialog.vala:1029
+#: src/compose-dialog.vala:137 src/compose-dialog.vala:964
 msgid "Bcc"
 msgstr ""
 
-#: src/compose-dialog.vala:148
+#: src/compose-dialog.vala:146
 msgid "Subject"
 msgstr ""
 
-#: src/compose-dialog.vala:164 src/compose-dialog.vala:1100
+#: src/compose-dialog.vala:162 src/compose-dialog.vala:1035
 msgid "Signature"
 msgstr ""
 
-#: src/compose-dialog.vala:354 src/compose-dialog.vala:780
-msgid "Saved to Drafts"
-msgstr ""
-
-#: src/compose-dialog.vala:556
+#: src/compose-dialog.vala:495
 msgid "Include original attachments?"
 msgstr ""
 
-#: src/compose-dialog.vala:558
+#: src/compose-dialog.vala:497
 msgid ""
 "You added someone who did not receive the original message. Attach the file "
 "from that message?"
@@ -1325,315 +1362,323 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: src/compose-dialog.vala:563
+#: src/compose-dialog.vala:502
 msgid "Don't Attach"
 msgstr ""
 
-#: src/compose-dialog.vala:564 src/compose-dialog.vala:1664
+#: src/compose-dialog.vala:503 src/compose-dialog.vala:1615
 msgid "Attach"
 msgstr ""
 
-#: src/compose-dialog.vala:664
+#: src/compose-dialog.vala:603
 msgid "Save changes to draft?"
 msgstr ""
 
-#: src/compose-dialog.vala:664
+#: src/compose-dialog.vala:603
 msgid "Save this message as a draft?"
 msgstr ""
 
-#: src/compose-dialog.vala:666
+#: src/compose-dialog.vala:605
 msgid "Your latest edits will update the draft in Drafts."
 msgstr ""
 
-#: src/compose-dialog.vala:667
+#: src/compose-dialog.vala:606
 msgid "It will be stored in Drafts so you can finish it later."
 msgstr ""
 
-#: src/compose-dialog.vala:669
+#: src/compose-dialog.vala:608
 msgid "Discard"
 msgstr ""
 
-#: src/compose-dialog.vala:670
+#: src/compose-dialog.vala:609
 msgid "Keep Editing"
 msgstr ""
 
-#: src/compose-dialog.vala:671
+#: src/compose-dialog.vala:610
 msgid "Save Changes"
 msgstr ""
 
-#: src/compose-dialog.vala:846
+#: src/compose-dialog.vala:716
+msgid "Saved to Drafts"
+msgstr ""
+
+#: src/compose-dialog.vala:782
 msgid "Mail is not ready to send yet."
 msgstr ""
 
-#: src/compose-dialog.vala:886
+#: src/compose-dialog.vala:821
 msgid "Queued in Outbox"
 msgstr ""
 
-#: src/compose-dialog.vala:936 src/format-toolbar.vala:24
+#: src/compose-dialog.vala:871 src/format-toolbar.vala:25
 msgid "Font"
 msgstr ""
 
-#: src/compose-dialog.vala:947 src/compose-dialog.vala:2288
-#: src/compose-dialog.vala:2462 src/format-toolbar.vala:35
+#: src/compose-dialog.vala:882 src/compose-dialog.vala:2239
+#: src/compose-dialog.vala:2413 src/format-toolbar.vala:36
 msgid "Small"
 msgstr ""
 
-#: src/compose-dialog.vala:948 src/format-toolbar.vala:36
+#: src/compose-dialog.vala:883 src/format-toolbar.vala:37
 msgid "Normal"
 msgstr ""
 
-#: src/compose-dialog.vala:949 src/format-toolbar.vala:37
+#: src/compose-dialog.vala:884 src/format-toolbar.vala:38
 msgid "Large"
 msgstr ""
 
-#: src/compose-dialog.vala:950 src/format-toolbar.vala:38
+#: src/compose-dialog.vala:885 src/format-toolbar.vala:39
 msgid "Huge"
 msgstr ""
 
-#: src/compose-dialog.vala:956 src/format-toolbar.vala:43
+#: src/compose-dialog.vala:891 src/format-toolbar.vala:44
 msgid "Font size"
 msgstr ""
 
-#: src/compose-dialog.vala:976 src/format-toolbar.vala:65
+#: src/compose-dialog.vala:911 src/format-toolbar.vala:66
 msgid "Bold"
 msgstr ""
 
-#: src/compose-dialog.vala:977 src/format-toolbar.vala:66
+#: src/compose-dialog.vala:912 src/format-toolbar.vala:67
 msgid "Italic"
 msgstr ""
 
-#: src/compose-dialog.vala:978 src/format-toolbar.vala:67
+#: src/compose-dialog.vala:913 src/format-toolbar.vala:68
 msgid "Underline"
 msgstr ""
 
-#: src/compose-dialog.vala:979 src/format-toolbar.vala:68
+#: src/compose-dialog.vala:914 src/format-toolbar.vala:69
 msgid "Strikethrough"
 msgstr ""
 
-#: src/compose-dialog.vala:988
+#: src/compose-dialog.vala:923
 msgid "Bullet list (Tab indents, Shift+Tab outdents)"
 msgstr ""
 
-#: src/compose-dialog.vala:993
+#: src/compose-dialog.vala:928
 msgid "Numbered list (Tab indents, Shift+Tab outdents)"
 msgstr ""
 
-#: src/compose-dialog.vala:996
+#: src/compose-dialog.vala:931
 msgid "Decrease Indent"
 msgstr ""
 
-#: src/compose-dialog.vala:997
+#: src/compose-dialog.vala:932
 msgid "Increase Indent"
 msgstr ""
 
-#: src/compose-dialog.vala:999 src/compose-dialog.vala:4078
-#: src/format-toolbar.vala:75
+#: src/compose-dialog.vala:934 src/compose-dialog.vala:4083
+#: src/format-toolbar.vala:76
 msgid "Insert Image"
 msgstr ""
 
-#: src/compose-dialog.vala:1005
+#: src/compose-dialog.vala:940
 msgid "Attach file"
 msgstr ""
 
-#: src/compose-dialog.vala:1014 src/compose-dialog.vala:1022
+#: src/compose-dialog.vala:949 src/compose-dialog.vala:957
 msgid "High priority"
 msgstr ""
 
-#: src/compose-dialog.vala:1021 src/compose-dialog.vala:1025
+#: src/compose-dialog.vala:956 src/compose-dialog.vala:960
 msgid "High priority (on)"
 msgstr ""
 
-#: src/compose-dialog.vala:1031
+#: src/compose-dialog.vala:966
 msgid "Show Bcc"
 msgstr ""
 
-#: src/compose-dialog.vala:1195 src/compose-dialog.vala:2542
-#: src/format-toolbar.vala:135
+#: src/compose-dialog.vala:1130 src/compose-dialog.vala:2493
+#: src/format-toolbar.vala:150
 msgid "Insert Emoji"
 msgstr ""
 
-#: src/compose-dialog.vala:1213 src/compose-dialog.vala:1329
+#: src/compose-dialog.vala:1148 src/compose-dialog.vala:1264
 msgid "Highlight"
 msgstr ""
 
-#: src/compose-dialog.vala:1213 src/compose-dialog.vala:1329
-#: src/format-toolbar.vala:153
+#: src/compose-dialog.vala:1148 src/compose-dialog.vala:1264
+#: src/format-toolbar.vala:168
 msgid "Text Color"
 msgstr ""
 
-#: src/compose-dialog.vala:1244
+#: src/compose-dialog.vala:1179
 msgid "No Highlight"
 msgstr ""
 
-#: src/compose-dialog.vala:1244 src/format-toolbar.vala:176
+#: src/compose-dialog.vala:1179 src/format-toolbar.vala:191
 msgid "Default Color"
 msgstr ""
 
-#: src/compose-dialog.vala:1260
+#: src/compose-dialog.vala:1195
 msgid "Yellow"
 msgstr ""
 
-#: src/compose-dialog.vala:1260 src/compose-dialog.vala:1268
-#: src/format-toolbar.vala:194
+#: src/compose-dialog.vala:1195 src/compose-dialog.vala:1203
+#: src/format-toolbar.vala:209
 msgid "Green"
 msgstr ""
 
-#: src/compose-dialog.vala:1260 src/compose-dialog.vala:1268
-#: src/format-toolbar.vala:194
+#: src/compose-dialog.vala:1195 src/compose-dialog.vala:1203
+#: src/format-toolbar.vala:209
 msgid "Blue"
 msgstr ""
 
-#: src/compose-dialog.vala:1260
+#: src/compose-dialog.vala:1195
 msgid "Pink"
 msgstr ""
 
-#: src/compose-dialog.vala:1260 src/compose-dialog.vala:1267
-#: src/format-toolbar.vala:193
+#: src/compose-dialog.vala:1195 src/compose-dialog.vala:1202
+#: src/format-toolbar.vala:208
 msgid "Orange"
 msgstr ""
 
-#: src/compose-dialog.vala:1260 src/compose-dialog.vala:1268
-#: src/format-toolbar.vala:194
+#: src/compose-dialog.vala:1195 src/compose-dialog.vala:1203
+#: src/format-toolbar.vala:209
 msgid "White"
 msgstr ""
 
-#: src/compose-dialog.vala:1267 src/format-toolbar.vala:193
+#: src/compose-dialog.vala:1202 src/format-toolbar.vala:208
 msgid "Black"
 msgstr ""
 
-#: src/compose-dialog.vala:1267 src/format-toolbar.vala:193
+#: src/compose-dialog.vala:1202 src/format-toolbar.vala:208
 msgid "Gray"
 msgstr ""
 
-#: src/compose-dialog.vala:1267 src/format-toolbar.vala:193
+#: src/compose-dialog.vala:1202 src/format-toolbar.vala:208
 msgid "Red"
 msgstr ""
 
-#: src/compose-dialog.vala:1267 src/format-toolbar.vala:193
+#: src/compose-dialog.vala:1202 src/format-toolbar.vala:208
 msgid "Gold"
 msgstr ""
 
-#: src/compose-dialog.vala:1268 src/format-toolbar.vala:194
+#: src/compose-dialog.vala:1203 src/format-toolbar.vala:209
 msgid "Purple"
 msgstr ""
 
-#: src/compose-dialog.vala:1279
+#: src/compose-dialog.vala:1214
 msgid "Custom Color…"
 msgstr ""
 
-#: src/compose-dialog.vala:1355 src/format-toolbar.vala:218
+#: src/compose-dialog.vala:1290 src/format-toolbar.vala:233
 msgid "Sans Serif"
 msgstr ""
 
-#: src/compose-dialog.vala:1356 src/format-toolbar.vala:220
+#: src/compose-dialog.vala:1291 src/format-toolbar.vala:235
 msgid "Serif"
 msgstr ""
 
-#: src/compose-dialog.vala:1357 src/format-toolbar.vala:222
+#: src/compose-dialog.vala:1292 src/format-toolbar.vala:237
 msgid "Monospace"
 msgstr ""
 
-#: src/compose-dialog.vala:1453
+#: src/compose-dialog.vala:1404
 msgid "None"
 msgstr ""
 
-#: src/compose-dialog.vala:1517
+#: src/compose-dialog.vala:1468
 msgid "Attach Files"
 msgstr ""
 
-#: src/compose-dialog.vala:1548 src/compose-dialog.vala:1640
+#: src/compose-dialog.vala:1499 src/compose-dialog.vala:1591
 msgid "Folders cannot be attached."
 msgstr ""
 
-#: src/compose-dialog.vala:1578
+#: src/compose-dialog.vala:1529
 #, c-format
 msgid "Could not attach “%s”."
 msgstr ""
 
-#: src/compose-dialog.vala:1660
+#: src/compose-dialog.vala:1611
 msgid "Attach or insert this image?"
 msgstr ""
 
-#: src/compose-dialog.vala:1661
+#: src/compose-dialog.vala:1612
 #, c-format
 msgid "“%s” can be attached to the message or placed in the body."
 msgstr ""
 
-#: src/compose-dialog.vala:1665
+#: src/compose-dialog.vala:1616
 msgid "Insert"
 msgstr ""
 
-#: src/compose-dialog.vala:1701
+#: src/compose-dialog.vala:1652
 msgid "The image was resized to stay under 2 MB."
 msgstr ""
 
-#: src/compose-dialog.vala:1704
+#: src/compose-dialog.vala:1655
 #, c-format
 msgid "Could not insert “%s”."
 msgstr ""
 
-#: src/compose-dialog.vala:1734
+#: src/compose-dialog.vala:1685
 #, c-format
 msgid ""
 "“%s” is too large to attach. Use a file transfer service and send the link "
 "instead."
 msgstr ""
 
-#: src/compose-dialog.vala:1738
+#: src/compose-dialog.vala:1689
 #, c-format
 msgid ""
 "%u files are too large to attach. Use a file transfer service and send the "
 "links instead."
 msgstr ""
 
-#: src/compose-dialog.vala:2075
+#: src/compose-dialog.vala:2026
 msgid "Pasted image"
 msgstr ""
 
-#: src/compose-dialog.vala:2289 src/compose-dialog.vala:2463
+#: src/compose-dialog.vala:2240 src/compose-dialog.vala:2414
 msgid "Medium"
 msgstr ""
 
-#: src/compose-dialog.vala:2290 src/compose-dialog.vala:2464
+#: src/compose-dialog.vala:2241 src/compose-dialog.vala:2415
 msgid "Original"
 msgstr ""
 
-#: src/compose-dialog.vala:2297
+#: src/compose-dialog.vala:2248
 msgid "Image size"
 msgstr ""
 
-#: src/compose-dialog.vala:2401 src/compose-dialog.vala:2430
+#: src/compose-dialog.vala:2352 src/compose-dialog.vala:2381
 msgid "Paste and Match Style"
 msgstr ""
 
-#: src/compose-dialog.vala:2449 src/compose-dialog.vala:2544
+#: src/compose-dialog.vala:2400 src/compose-dialog.vala:2495
 msgid "Add to Dictionary"
 msgstr ""
 
-#: src/compose-dialog.vala:2457
+#: src/compose-dialog.vala:2408
 msgid "Remove Link"
 msgstr ""
 
-#: src/compose-dialog.vala:2467
+#: src/compose-dialog.vala:2418
 msgid "Image Size"
 msgstr ""
 
-#: src/compose-dialog.vala:2546
+#: src/compose-dialog.vala:2497
 msgid "Ignore Spelling"
 msgstr ""
 
-#: src/compose-dialog.vala:4081
+#: src/compose-dialog.vala:4086
 msgid "Images"
 msgstr ""
 
 #: src/recipient-editor.vala:51 src/recipient-editor.vala:180
-#: src/search-field.vala:113 src/contact-picker.vala:115
+#: src/search-field.vala:114 src/contact-picker.vala:115
 msgid "Address book"
 msgstr ""
 
-#: src/recipient-editor.vala:51 src/search-field.vala:113
+#: src/recipient-editor.vala:51 src/search-field.vala:114
 #: src/contact-picker.vala:115 src/contact-picker.vala:127
 msgid "Recent recipient"
+msgstr ""
+
+#: src/recipient-editor.vala:192
+msgid "Searching"
 msgstr ""
 
 #: src/search-query.vala:99 src/search-query.vala:110
@@ -1671,23 +1716,23 @@ msgctxt "Search filter"
 msgid "to:"
 msgstr ""
 
-#: src/search-field.vala:91
+#: src/search-field.vala:92
 msgid "Search sender"
 msgstr ""
 
-#: src/search-field.vala:95
+#: src/search-field.vala:96
 msgid "Search recipients"
 msgstr ""
 
-#: src/search-field.vala:99
+#: src/search-field.vala:100
 msgid "Search everywhere"
 msgstr ""
 
-#: src/search-field.vala:234
+#: src/search-field.vala:235
 msgid "Clear search"
 msgstr ""
 
-#: src/search-field.vala:425
+#: src/search-field.vala:434
 msgid "Remove"
 msgstr ""
 
@@ -1778,7 +1823,7 @@ msgstr ""
 msgid "Default"
 msgstr ""
 
-#: src/preferences-dialog.vala:139 src/utils.vala:337 src/utils.vala:346
+#: src/preferences-dialog.vala:139 src/utils.vala:373 src/utils.vala:382
 #: src/eml-viewer.vala:19 src/eml-viewer.vala:35
 msgid "Message"
 msgstr ""
@@ -2043,66 +2088,66 @@ msgstr ""
 msgid "Letter (Development)"
 msgstr ""
 
-#: src/utils.vala:278
+#: src/utils.vala:314
 #, c-format
 msgid "The attachment “%s” is empty."
 msgstr ""
 
-#: src/utils.vala:325
+#: src/utils.vala:361
 msgid "Save Attachment"
 msgstr ""
 
-#: src/utils.vala:354
+#: src/utils.vala:390
 msgid "Save as EML"
 msgstr ""
 
-#: src/utils.vala:360
+#: src/utils.vala:396
 msgid "Email Message"
 msgstr ""
 
-#: src/utils.vala:382
+#: src/utils.vala:418
 msgid "Save Attachments"
 msgstr ""
 
-#: src/utils.vala:451 src/utils.vala:456 src/utils.vala:462 src/utils.vala:483
+#: src/utils.vala:487 src/utils.vala:492 src/utils.vala:498 src/utils.vala:519
 msgid "The image could not be opened."
 msgstr ""
 
-#: src/utils.vala:1568
+#: src/utils.vala:1653
 #, c-format
 msgid "On %s, %s wrote"
 msgstr ""
 
-#: src/utils.vala:2268
+#: src/utils.vala:2353
 #, c-format
 msgid "“%s” is not a valid email address."
 msgstr ""
 
-#: src/utils.vala:2269
+#: src/utils.vala:2354
 msgid "Check the recipients. At least one address is not valid."
 msgstr ""
 
-#: src/utils.vala:2273
+#: src/utils.vala:2358
 msgid "You do not have permission to send this message."
 msgstr ""
 
-#: src/utils.vala:2276
+#: src/utils.vala:2361
 msgid "The mailbox is full. The message could not be sent."
 msgstr ""
 
-#: src/utils.vala:2279
+#: src/utils.vala:2364
 msgid "The server took too long to respond. Try again."
 msgstr ""
 
-#: src/utils.vala:2282
+#: src/utils.vala:2367
 msgid "Could not reach the mail server. Check your connection."
 msgstr ""
 
-#: src/utils.vala:2285
+#: src/utils.vala:2370
 msgid "The message was not sent."
 msgstr ""
 
-#: src/utils.vala:2287
+#: src/utils.vala:2372
 msgid "The message could not be sent."
 msgstr ""
 

@@ -34,6 +34,7 @@ mail_sources = files(
   'account-row.vala',
   'account-store.vala',
   'mail-session.vala',
+  'body-index.vala',
   'notifier.vala',
   'conversation.vala',
   'message-reader.vala',

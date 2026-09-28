@@ -18,8 +18,9 @@ public class Mail.MessageReader : Gtk.Box {
     private Adw.Banner trust_banner;
     private InvitationBar invitation_bar;
     private WebKit.NetworkSession network_session;
-    private WebKit.WebView webview;
+    private WebKit.WebView? webview;
     private Gtk.Stack stack;
+    private bool load_remote_images;
     private SimpleAction view_image_action;
     private string? context_image_uri;
     private MessageContent? current;
@@ -156,38 +157,24 @@ public class Mail.MessageReader : Gtk.Box {
         append (this.trust_banner);
         append (this.invitation_bar);
 
-        var settings = new WebKit.Settings () {
-            enable_javascript = false,
-            enable_javascript_markup = false,
-            javascript_can_open_windows_automatically = false,
-            javascript_can_access_clipboard = false,
-            allow_modal_dialogs = false,
-            enable_html5_database = false,
-            enable_html5_local_storage = false,
-            enable_page_cache = false,
-            auto_load_images = false,
-        };
-
-        this.network_session = new WebKit.NetworkSession.ephemeral ();
-        this.webview = (WebKit.WebView) Object.new (typeof (WebKit.WebView),
-            "network-session", this.network_session,
-            "settings", settings,
-            "hexpand", true,
-            "vexpand", true
-        );
-        this.webview.add_css_class ("message-body");
-        this.webview.decide_policy.connect (on_decide_policy);
-        this.webview.context_menu.connect (on_context_menu);
         this.view_image_action = new SimpleAction ("view-image", null);
         this.view_image_action.activate.connect (() => view_context_image.begin ());
-        this.webview.load_changed.connect (on_webview_load_changed);
-        update_webview_background ();
+        this.network_session = new WebKit.NetworkSession.ephemeral ();
 
         var placeholder = new Gtk.Box (Gtk.Orientation.VERTICAL, 0) {
             hexpand = true,
             vexpand = true,
         };
         placeholder.add_css_class ("message-body-placeholder");
+        placeholder.append (new Adw.Spinner () {
+            halign = Gtk.Align.CENTER,
+            valign = Gtk.Align.CENTER,
+            hexpand = true,
+            vexpand = true,
+            width_request = 32,
+            height_request = 32,
+            can_target = false,
+        });
 
         this.stack = new Gtk.Stack () {
             hexpand = true,
@@ -200,18 +187,27 @@ public class Mail.MessageReader : Gtk.Box {
         };
         this.stack.add_css_class ("message-body-stack");
         this.stack.add_named (placeholder, "loading");
-        this.stack.add_named (this.webview, "body");
+        this.stack.visible_child_name = "loading";
         append (this.stack);
-        apply_zoom (this.settings.get_double ("reader-zoom"), false);
-        add_zoom_scroll ();
+    }
+
+    public override void dispose () {
+        retire_webview ();
+        base.dispose ();
     }
 
     public void zoom_in () {
-        apply_zoom (this.webview.zoom_level * ZOOM_STEP, true);
+        var current = this.webview != null
+            ? this.webview.zoom_level
+            : this.settings.get_double ("reader-zoom");
+        apply_zoom (current * ZOOM_STEP, true);
     }
 
     public void zoom_out () {
-        apply_zoom (this.webview.zoom_level / ZOOM_STEP, true);
+        var current = this.webview != null
+            ? this.webview.zoom_level
+            : this.settings.get_double ("reader-zoom");
+        apply_zoom (current / ZOOM_STEP, true);
     }
 
     public void zoom_reset () {
@@ -222,12 +218,13 @@ public class Mail.MessageReader : Gtk.Box {
         zoom = zoom.clamp (ZOOM_MIN, ZOOM_MAX);
         if (Math.fabs (zoom - 1.0) < 0.03)
             zoom = 1.0;
-        this.webview.zoom_level = zoom;
+        if (this.webview != null)
+            this.webview.zoom_level = zoom;
         if (persist)
             this.settings.set_double ("reader-zoom", zoom);
     }
 
-    private void add_zoom_scroll () {
+    private void add_zoom_scroll (WebKit.WebView view) {
         var scroll = new Gtk.EventControllerScroll (Gtk.EventControllerScrollFlags.VERTICAL);
         scroll.set_propagation_phase (Gtk.PropagationPhase.CAPTURE);
         scroll.scroll.connect ((dx, dy) => {
@@ -240,7 +237,7 @@ public class Mail.MessageReader : Gtk.Box {
                 zoom_out ();
             return true;
         });
-        this.webview.add_controller (scroll);
+        view.add_controller (scroll);
     }
 
     public void set_show_header_actions (bool show) {
@@ -290,7 +287,7 @@ public class Mail.MessageReader : Gtk.Box {
     }
 
     public void print (Gtk.Window? parent) {
-        if (this.current == null || this.stack.visible_child_name != "body")
+        if (this.current == null || this.webview == null || this.stack.visible_child_name != "body")
             return;
 
         var operation = new WebKit.PrintOperation (this.webview);
@@ -316,6 +313,7 @@ public class Mail.MessageReader : Gtk.Box {
             this.from_label.label = "";
             this.date_label.label = "";
         }
+        retire_webview ();
         this.stack.visible_child_name = "loading";
     }
 
@@ -333,7 +331,8 @@ public class Mail.MessageReader : Gtk.Box {
             && Utils.mailbox_uses_org_trust (this.mailbox)
             && this.contacts != null;
         var needs_trust = content.has_remote_images && !trusted && !check_book;
-        var same_body = this.current != null
+        var same_body = this.webview != null
+            && this.current != null
             && this.current.uid == content.uid
             && this.stack.visible_child_name == "body"
             && this.trust_banner.revealed == needs_trust
@@ -350,7 +349,9 @@ public class Mail.MessageReader : Gtk.Box {
         this.header_actions.visible = this.allow_header_actions;
 
         this.trust_banner.revealed = needs_trust;
-        this.webview.get_settings ().auto_load_images = trusted || !content.has_remote_images;
+        this.load_remote_images = trusted || !content.has_remote_images;
+        if (this.webview != null)
+            this.webview.get_settings ().auto_load_images = this.load_remote_images;
         bind_attachments (content.attachments);
         this.invitation_bar.bind (content.invitation);
         if (!same_body)
@@ -374,7 +375,7 @@ public class Mail.MessageReader : Gtk.Box {
         this.attachments_box.visible = false;
         this.invitation_bar.bind (null);
         this.trust_banner.revealed = false;
-        this.webview.get_settings ().auto_load_images = false;
+        this.load_remote_images = false;
         load_body_html (MessageContent.text_to_html (message));
     }
 
@@ -390,7 +391,7 @@ public class Mail.MessageReader : Gtk.Box {
         Utils.trust_sender (this.settings, email);
         content.from_email = email;
         this.trust_banner.revealed = false;
-        this.webview.get_settings ().auto_load_images = true;
+        this.load_remote_images = true;
         bind_attachments (content.attachments);
         reload_with_images.begin (content);
     }
@@ -401,7 +402,7 @@ public class Mail.MessageReader : Gtk.Box {
             return;
         if (found) {
             this.trust_banner.revealed = false;
-            this.webview.get_settings ().auto_load_images = true;
+            this.load_remote_images = true;
             bind_attachments (content.attachments);
             reload_with_images.begin (content);
             return;
@@ -409,14 +410,87 @@ public class Mail.MessageReader : Gtk.Box {
         this.trust_banner.revealed = content.has_remote_images;
     }
 
+    private WebKit.WebView create_reader_view () {
+        var settings = new WebKit.Settings () {
+            enable_javascript = false,
+            enable_javascript_markup = false,
+            javascript_can_open_windows_automatically = false,
+            javascript_can_access_clipboard = false,
+            allow_modal_dialogs = false,
+            enable_html5_database = false,
+            enable_html5_local_storage = false,
+            enable_page_cache = false,
+            auto_load_images = this.load_remote_images,
+            /* Mail HTML does not need a GPU surface. Accelerated WebKit
+             * punches through GTK, and killing that surface on screen flashes
+             * black. Software paint starts from the white background. */
+            hardware_acceleration_policy = WebKit.HardwareAccelerationPolicy.NEVER,
+        };
+        var view = (WebKit.WebView) Object.new (typeof (WebKit.WebView),
+            "network-session", this.network_session,
+            "settings", settings,
+            "hexpand", true,
+            "vexpand", true
+        );
+        view.add_css_class ("message-body");
+        view.decide_policy.connect (on_decide_policy);
+        view.context_menu.connect (on_context_menu);
+        var rgba = Gdk.RGBA ();
+        rgba.parse ("#ffffff");
+        view.set_background_color (rgba);
+        add_zoom_scroll (view);
+        var zoom = this.settings.get_double ("reader-zoom").clamp (ZOOM_MIN, ZOOM_MAX);
+        if (Math.fabs (zoom - 1.0) < 0.03)
+            zoom = 1.0;
+        view.zoom_level = zoom;
+        return view;
+    }
+
+    /* Unmap and drop the current view before killing its process, so the
+     * last frame is not left on screen. */
+    private void retire_webview () {
+        var old = this.webview;
+        if (old == null)
+            return;
+        this.webview = null;
+        this.stack.visible_child_name = "loading";
+        if (old.parent == this.stack)
+            this.stack.remove (old);
+        else if (old.parent != null)
+            old.unparent ();
+        old.terminate_web_process ();
+    }
+
     private void load_body_html (string html) {
         this.html_epoch++;
+        var epoch = this.html_epoch;
+        retire_webview ();
+        var view = create_reader_view ();
+        this.webview = view;
+        var previous = this.stack.get_child_by_name ("body");
+        if (previous != null)
+            this.stack.remove (previous);
+        this.stack.add_named (view, "body");
         this.stack.visible_child_name = "loading";
-        this.webview.stop_loading ();
-        this.webview.load_html (
+        ulong loaded = 0;
+        loaded = view.load_changed.connect ((event) => {
+            if (epoch != this.html_epoch || this.webview != view)
+                return;
+            if (event != WebKit.LoadEvent.FINISHED)
+                return;
+            view.disconnect (loaded);
+            this.stack.visible_child_name = "body";
+        });
+        view.load_failed.connect ((event, uri, error) => {
+            if (epoch != this.html_epoch || this.webview != view)
+                return false;
+            this.stack.visible_child_name = "body";
+            return false;
+        });
+        view.load_html (
             "%s\n<!-- mail-reload %u -->".printf (
                 html_with_print_chrome (this.current, html),
-                this.html_epoch
+                epoch
             ),
             "about:blank"
         );
@@ -635,7 +709,6 @@ html { color-scheme: only light; }
             return;
 
         load_body_html (content.html);
-        this.stack.visible_child_name = "body";
     }
 
     private void bind_attachments (GenericArray<Attachment>? attachments) {
@@ -702,17 +775,6 @@ html { color-scheme: only light; }
                 widget = widget.parent;
             }
         }
-    }
-
-    private void on_webview_load_changed (WebKit.LoadEvent event) {
-        if (event == WebKit.LoadEvent.COMMITTED || event == WebKit.LoadEvent.FINISHED)
-            this.stack.visible_child_name = "body";
-    }
-
-    private void update_webview_background () {
-        var rgba = Gdk.RGBA ();
-        rgba.parse ("#ffffff");
-        this.webview.set_background_color (rgba);
     }
 
     private bool on_decide_policy (WebKit.PolicyDecision decision, WebKit.PolicyDecisionType type) {

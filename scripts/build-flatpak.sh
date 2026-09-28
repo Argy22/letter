@@ -17,7 +17,9 @@ cd "$root"
 manifest=io.github.stalvatero.Letter.yml
 build_dir="${FLATPAK_BUILD_DIR:-build-flatpak}"
 repo_dir="${FLATPAK_REPO_DIR:-repo}"
-bundle="${FLATPAK_BUNDLE:-Letter-$(git describe --tags --always 2>/dev/null || echo 1.0.0-rc.5)-x86_64.flatpak}"
+# Prefer meson version for Release asset names (Letter-1.0.0-rc.N-…, no leading "v").
+project_ver="$(sed -n "s/^[[:space:]]*version:[[:space:]]*'\([^']*\)'.*/\1/p" meson.build | head -1)"
+bundle="${FLATPAK_BUNDLE:-Letter-${project_ver:-1.0.0-rc.5}-x86_64.flatpak}"
 do_install="${FLATPAK_INSTALL:-0}"
 
 if ! command -v flatpak-builder >/dev/null; then

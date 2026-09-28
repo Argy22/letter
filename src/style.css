@@ -73,7 +73,6 @@
 
 .bulk-reader-actions {
   margin-top: 8px;
-  max-width: 380px;
 }
 
 .bulk-reader-actions button.pill {
@@ -172,6 +171,11 @@ headerbar button.conversation-toggle:checked {
 .message-list > row {
   padding: 8px 12px 8px 8px;
   border-bottom: 1px solid var(--border-color);
+  min-height: 72px;
+}
+
+.message-row {
+  min-height: 72px;
 }
 
 .message-row .unread-indicator {
@@ -314,6 +318,29 @@ headerbar button.conversation-toggle:checked {
   background: color-mix(in srgb, var(--accent-bg-color) 40%, var(--view-bg-color));
 }
 
+.search-deeper-bar {
+  padding: 8px 0 4px 0;
+  background: color-mix(in srgb, var(--accent-bg-color) 16%, var(--view-bg-color));
+  border-top: 1px solid color-mix(in srgb, var(--accent-bg-color) 22%, var(--border-color));
+  color: var(--view-fg-color);
+}
+
+.search-deeper-bar label {
+  color: var(--view-fg-color);
+}
+
+.search-deeper-bar button {
+  color: var(--accent-color);
+  background: color-mix(in srgb, var(--accent-bg-color) 28%, var(--view-bg-color));
+  border-radius: 999px;
+  padding: 2px 10px;
+  min-height: 28px;
+}
+
+.search-deeper-bar button:hover {
+  background: color-mix(in srgb, var(--accent-bg-color) 40%, var(--view-bg-color));
+}
+
 .sync-spinner {
   min-width: 18px;
   min-height: 18px;
@@ -327,6 +354,10 @@ headerbar button.conversation-toggle:checked {
 .message-reader .message-body-placeholder,
 .message-reader .message-body {
   background: #ffffff;
+}
+
+.message-body-placeholder image.spinner {
+  color: alpha(#222222, 0.38);
 }
 
 .compose-body,
@@ -351,7 +382,6 @@ webview.message-body {
   margin: 0;
   padding: 2px 8px;
   border-radius: 999px;
-  width: max-content;
   color: #b42318;
   background: color-mix(in srgb, #b42318 12%, var(--view-bg-color));
 }
