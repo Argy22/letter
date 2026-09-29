@@ -14,6 +14,8 @@ public class Mail.MailSession : Camel.Session {
     private string? authenticating_mechanism;
     private HashTable<string, MessageContent> body_cache;
     private HashTable<string, int64?> body_cache_touched;
+    /* UIDs whose saved copy had a cut-off image and were downloaded again. */
+    private HashTable<string, uint8> body_reload_tried;
     private string? pinned_body_key;
     private GenericArray<FlagFlushJob> flag_flush_queue;
     private HashTable<string, FlagFlushJob> flag_flush_latest;
@@ -113,6 +115,7 @@ public class Mail.MailSession : Camel.Session {
         this.prompter.get_dialog_parent.connect (on_dialog_parent);
         this.body_cache = new HashTable<string, MessageContent> (str_hash, str_equal);
         this.body_cache_touched = new HashTable<string, int64?> (str_hash, str_equal);
+        this.body_reload_tried = new HashTable<string, uint8> (str_hash, str_equal);
         this.flag_flush_queue = new GenericArray<FlagFlushJob> ();
         this.flag_flush_latest = new HashTable<string, FlagFlushJob> (str_hash, str_equal);
         this.transfer_flush_queue = new GenericArray<TransferFlushJob> ();
@@ -705,7 +708,9 @@ public class Mail.MailSession : Camel.Session {
          * 1. Incomplete refresh (budget timed out) → always keep prior list
          *    (any folder). Partial Graph/Camel summaries are untrusted.
          * 2. Complete refresh + incoming empty → accept (folder cleared on
-         *    server; Empty Trash from another client, etc.).
+         *    the server). Empty Trash/Junk from Letter already cleared the
+         *    list before this call; a finished walk that returns no UIDs
+         *    does the same for any other folder.
          * 3. Complete refresh + previous already large (≥ HEADER_LIST_LARGE)
          *    + catastrophic shrink to a non-empty partial → keep prior list.
          *    Online Archive and any big custom folder can "complete" with a
@@ -1300,8 +1305,9 @@ public class Mail.MailSession : Camel.Session {
                     Utils.sync_log ("Camel lock: cancelling flag sync for priority work");
                     this.flag_op_cancellable.cancel ();
                 } else if (this.graph_refresh_holders > 0) {
-                    /* refresh_info owns Graph until budget end — never cancel
-                     * mid-wave (shreds M365 Camel summaries). Send/open wait. */
+                    /* refresh_info owns Graph until its slice ends. This wait
+                     * does not cancel it. Letter cancels a long until-done
+                     * from send and the sync timer; finished pages stay saved. */
                     if (spins == 100 || spins % 500 == 0) {
                         Utils.sync_log (
                             this.send_waiters > 0
@@ -1396,6 +1402,11 @@ public class Mail.MailSession : Camel.Session {
             || timeout_seconds == REFRESH_INFO_FORCE_UNTIL_DONE;
     }
 
+    /* Bumped from the evolution-ews page callback. 0 on host deb builds. */
+    private static uint m365_delta_pages (Camel.Folder folder) {
+        return (uint) (size_t) folder.get_data<void*> ("letter-m365-delta-pages");
+    }
+
     /* Returns false when the time budget ended mid-refresh (Camel summary may
      * be partial). Parent cancel still throws via list_messages.
      * REFRESH_INFO_FORCE_UNTIL_DONE never wall-clock cancels (Update Folder). */
@@ -1417,10 +1428,9 @@ public class Mail.MailSession : Camel.Session {
                 });
             }
         }
-        /* Mid-slice parent cancel shreds Online Archive summaries — FORCE waves
-         * use a dedicated cancellable. UNTIL_DONE (user Update Folder) waits for
-         * Graph; idle FORCE keeps a soft-extended budget so timer waves cannot
-         * hang forever. */
+        /* A parent cancel stops an until-done after the last saved Graph
+         * page. A short tip uses its own budget. Update Folder has no
+         * wall-clock cancel. */
         var seconds = timeout_seconds;
         if (seconds == 0)
             seconds = high ? REFRESH_INFO_NORMAL : REFRESH_INFO_FULL;
@@ -1430,6 +1440,7 @@ public class Mail.MailSession : Camel.Session {
         var name = camel_folder.get_full_display_name () ?? camel_folder.get_full_name ();
         var uids_before = folder_list_uids (camel_folder).length;
         var uids_checkpoint = uids_before;
+        var pages_checkpoint = m365_delta_pages (camel_folder);
         uint extends_used = 0;
         uint timeout_id = 0;
         if (force_until_done) {
@@ -1437,11 +1448,30 @@ public class Mail.MailSession : Camel.Session {
                 if (timed.is_cancelled ())
                     return Source.REMOVE;
                 var uids_now = folder_list_uids (camel_folder).length;
+                var pages_now = m365_delta_pages (camel_folder);
+                /* UID count stays flat while Graph updates or deletes mail
+                 * already in the summary. Only a stretch with no new page
+                 * is a silent server. */
+                if (uids_now == uids_checkpoint && pages_now == pages_checkpoint) {
+                    Utils.sync_log (
+                        "Camel refresh_info stalled “%s” uids %u pages %u — ending slice (server silent)".printf (
+                            name,
+                            uids_now,
+                            pages_now
+                        )
+                    );
+                    timed_out = true;
+                    timed.cancel ();
+                    return Source.REMOVE;
+                }
+                uids_checkpoint = uids_now;
+                pages_checkpoint = pages_now;
                 Utils.sync_log (
-                    "Camel refresh_info heartbeat “%s” uids %u (started %u, no budget cancel)".printf (
+                    "Camel refresh_info heartbeat “%s” uids %u (started %u) pages %u".printf (
                         name,
                         uids_now,
-                        uids_before
+                        uids_before,
+                        pages_now
                     )
                 );
                 return Source.CONTINUE;
@@ -1559,6 +1589,59 @@ public class Mail.MailSession : Camel.Session {
             leave_camel (high);
         }
         return completed && !timed_out;
+    }
+
+    [CCode (cname = "dlopen", cheader_filename = "dlfcn.h")]
+    private static extern void* letter_dlopen (string filename, int flags);
+    [CCode (cname = "dlsym", cheader_filename = "dlfcn.h")]
+    private static extern void* letter_dlsym (void* handle, string symbol);
+
+    [CCode (has_target = false)]
+    private delegate void M365RefreshMessageCache (Camel.Folder folder, string uid);
+
+    private static M365RefreshMessageCache? m365_refresh_message_cache;
+    private static bool m365_refresh_message_cache_probed;
+
+    /* Camel's get_message returns the cache file when one exists. A cut-off
+     * MIME stays cut off until that file is removed. The symbol lives in the
+     * Flatpak evolution-ews patch; the host library does not have it. */
+    private static bool discard_m365_cached_body (Camel.Folder folder, string uid) {
+        if (folder.get_type ().name () != "CamelM365Folder")
+            return false;
+        if (!m365_refresh_message_cache_probed) {
+            m365_refresh_message_cache_probed = true;
+            var path = m365_provider_library ();
+            if (path != null) {
+                var handle = letter_dlopen (path, 1 | 4);
+                if (handle != null) {
+                    var sym = letter_dlsym (handle, "camel_m365_folder_refresh_message_cache");
+                    if (sym != null)
+                        m365_refresh_message_cache = (M365RefreshMessageCache) sym;
+                }
+            }
+        }
+        if (m365_refresh_message_cache == null)
+            return false;
+        m365_refresh_message_cache (folder, uid);
+        return true;
+    }
+
+    private static string? m365_provider_library () {
+        try {
+            string maps;
+            FileUtils.get_contents ("/proc/self/maps", out maps);
+            foreach (var line in maps.split ("\n")) {
+                if (!line.contains ("libcamelmicrosoft365.so"))
+                    continue;
+                var slash = line.last_index_of (" /");
+                if (slash < 0)
+                    continue;
+                return line.substring (slash + 1).strip ();
+            }
+        } catch (Error e) {
+            return null;
+        }
+        return null;
     }
 
     private async Camel.MimeMessage? fetch_camel_message (
@@ -2382,6 +2465,18 @@ public class Mail.MailSession : Camel.Session {
         var mime = message_from_local_cache (camel_folder, uid);
         if (mime == null)
             return null;
+        if (MessageContent.mime_body_incomplete (mime)
+            && NetworkMonitor.get_default ().network_available) {
+            /* The open path downloads this once. Do not pin the cut-off copy.
+             * Offline, keep the partial file: a failed fetch would replace it. */
+            Utils.sync_log (
+                "open body “%s” uid=%s incomplete on disk — will download again".printf (
+                    folder.name,
+                    uid
+                )
+            );
+            return null;
+        }
 
         Utils.sync_log ("open body “%s” uid=%s from disk (no wait)".printf (folder.name, uid));
         var fetched = MessageContent.from_mime (uid, mime);
@@ -2427,22 +2522,54 @@ public class Mail.MailSession : Camel.Session {
     public async MessageContent load_message (Account account, Folder folder, string uid, Cancellable? cancellable = null) throws Error {
         var key = body_key (account, folder, uid);
         var cached = this.body_cache.get (key);
-        if (cached != null) {
+        if (cached != null && (!cached.body_incomplete || this.body_reload_tried.contains (key))) {
             touch_body_cache_key (key);
             this.pinned_body_key = key;
             return cached;
         }
+        if (cached != null)
+            this.body_cache.remove (key);
 
         var camel_folder = yield open_camel_folder (account, folder, null);
         var mime = message_from_local_cache (camel_folder, uid);
-        if (mime != null)
+        Camel.MimeMessage? stale = null;
+        if (mime != null && MessageContent.mime_body_incomplete (mime)
+            && NetworkMonitor.get_default ().network_available
+            && !this.body_reload_tried.contains (key)) {
+            this.body_reload_tried.set (key, 1);
+            if (discard_m365_cached_body (camel_folder, uid)) {
+                Utils.sync_log (
+                    "open body “%s” uid=%s incomplete on disk — downloading again".printf (
+                        folder.name,
+                        uid
+                    )
+                );
+                stale = mime;
+                mime = null;
+            } else {
+                Utils.sync_log (
+                    "open body “%s” uid=%s incomplete on disk — cache could not be dropped".printf (
+                        folder.name,
+                        uid
+                    )
+                );
+            }
+        } else if (mime != null) {
             Utils.sync_log ("open body “%s” uid=%s from disk".printf (folder.name, uid));
+        }
         if (mime == null) {
             Utils.sync_log ("open body “%s” uid=%s from server".printf (folder.name, uid));
             try {
                 mime = yield fetch_camel_message (camel_folder, uid, Priority.DEFAULT, cancellable);
             } catch (Error e) {
-                mime = message_from_local_cache (camel_folder, uid);
+                Utils.sync_log (
+                    "open body “%s” uid=%s download failed: %s".printf (
+                        folder.name,
+                        uid,
+                        e.message
+                    )
+                );
+                mime = stale ?? message_from_local_cache (camel_folder, uid);
                 if (mime == null) {
                     if (is_missing_on_server (e)) {
                         throw new IOError.NOT_FOUND (
@@ -2460,6 +2587,10 @@ public class Mail.MailSession : Camel.Session {
         }
 
         var fetched = MessageContent.from_mime (uid, mime);
+        if (fetched.body_incomplete)
+            Utils.sync_log (
+                "open body “%s” uid=%s still incomplete after open".printf (folder.name, uid)
+            );
         this.pinned_body_key = key;
         remember_body_cache (key, fetched);
         index_cached_body (account, folder, uid, fetched.plain_text);
@@ -5661,7 +5792,7 @@ public class Mail.MailSession : Camel.Session {
         }
 
         var mime = message_from_local_cache (camel_folder, uid);
-        if (mime != null) {
+        if (mime != null && !MessageContent.mime_body_incomplete (mime)) {
             var content = MessageContent.from_mime (uid, mime);
             remember_body_cache (key, content);
             index_cached_body (account, folder, uid, content.plain_text);
@@ -6934,6 +7065,8 @@ public class Mail.MessageContent : Object {
     public string html { get; set; }
     public string? plain_text { get; set; }
     public bool has_remote_images { get; set; }
+    /* An inline image in the saved copy is cut off. One server fetch replaces it. */
+    public bool body_incomplete { get; set; }
     public GenericArray<Attachment> attachments { get; set; }
     public Invitation? invitation { get; set; }
     public string? message_id { get; set; }
@@ -6977,6 +7110,86 @@ public class Mail.MessageContent : Object {
         medium.remove_header ("X-Priority");
         medium.remove_header ("Priority");
         medium.remove_header ("X-MSMail-Priority");
+    }
+
+    /* A cancelled or cut-off download leaves a MIME file that ends inside an
+     * image. WebKit then blinks that picture. PNG/JPEG/GIF/WEBP that do not
+     * finish their container are incomplete; SVG and other types are left. */
+    public static bool mime_body_incomplete (Camel.MimeMessage mime) {
+        var incomplete = false;
+        mime.foreach_part ((message, part, parent) => {
+            if (incomplete)
+                return false;
+            var type = part.get_content_type ();
+            if (type == null || !type.@is ("image", "*"))
+                return true;
+            var simple = type.simple ().down ();
+            if (simple.has_prefix ("image/svg"))
+                return true;
+            var bytes = decode_part_bytes (part.get_content ());
+            if (bytes == null || image_bytes_incomplete (simple, bytes))
+                incomplete = true;
+            return !incomplete;
+        });
+        return incomplete;
+    }
+
+    private static bool image_bytes_incomplete (string mime_type, Bytes bytes) {
+        unowned uint8[] data = bytes.get_data ();
+        if (data.length < 8)
+            return true;
+        if (mime_type.has_prefix ("image/png") || png_signature (data))
+            return png_incomplete (data);
+        if (mime_type.has_prefix ("image/jpeg") || mime_type.has_prefix ("image/jpg")
+            || (data[0] == 0xff && data[1] == 0xd8))
+            return data[data.length - 2] != 0xff || data[data.length - 1] != 0xd9;
+        if (mime_type.has_prefix ("image/gif"))
+            return data[data.length - 1] != 0x3b;
+        if (mime_type.has_prefix ("image/webp"))
+            return webp_incomplete (data);
+        return false;
+    }
+
+    private static bool png_signature (uint8[] data) {
+        return data.length >= 8
+            && data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4e && data[3] == 0x47
+            && data[4] == 0x0d && data[5] == 0x0a && data[6] == 0x1a && data[7] == 0x0a;
+    }
+
+    private static bool png_incomplete (uint8[] data) {
+        if (!png_signature (data))
+            return true;
+        uint pos = 8;
+        var saw_iend = false;
+        while (pos + 8 <= data.length) {
+            uint32 len = ((uint32) data[pos] << 24)
+                | ((uint32) data[pos + 1] << 16)
+                | ((uint32) data[pos + 2] << 8)
+                | (uint32) data[pos + 3];
+            var iend = data[pos + 4] == 'I' && data[pos + 5] == 'E'
+                && data[pos + 6] == 'N' && data[pos + 7] == 'D';
+            uint64 next = (uint64) pos + 12 + (uint64) len;
+            if (next > data.length)
+                return true;
+            pos = (uint) next;
+            if (iend) {
+                saw_iend = true;
+                break;
+            }
+        }
+        return !saw_iend;
+    }
+
+    private static bool webp_incomplete (uint8[] data) {
+        if (data.length < 12)
+            return true;
+        if (data[0] != 'R' || data[1] != 'I' || data[2] != 'F' || data[3] != 'F')
+            return true;
+        uint32 size = (uint32) data[4]
+            | ((uint32) data[5] << 8)
+            | ((uint32) data[6] << 16)
+            | ((uint32) data[7] << 24);
+        return (uint64) data.length < (uint64) size + 8;
     }
 
     public static MessageContent from_mime (string uid, Camel.MimeMessage mime) {
@@ -7032,6 +7245,7 @@ public class Mail.MessageContent : Object {
             collect_calendar (mime, ref calendar);
 
         var invitation = CalendarStore.parse (calendar);
+        var incomplete = mime_body_incomplete (mime);
         string body;
         if (html != null && html.strip ().length > 0)
             body = rewrite_cids (html, images);
@@ -7057,6 +7271,7 @@ public class Mail.MessageContent : Object {
             html = body,
             plain_text = text,
             has_remote_images = Utils.html_has_remote_images (body),
+            body_incomplete = incomplete,
             attachments = attachments,
             invitation = invitation,
             message_id = mime.get_message_id (),

@@ -1,6 +1,147 @@
---- a/src/Microsoft365/camel/camel-m365-folder.c	2026-09-26 21:22:01.168453087 +0200
-+++ b/src/Microsoft365/camel/camel-m365-folder.c	2026-09-26 21:22:01.210057174 +0200
-@@ -952,19 +952,32 @@
+--- a/src/Microsoft365/camel/camel-m365-folder.c
++++ b/src/Microsoft365/camel/camel-m365-folder.c
+@@ -129,4 +129,16 @@ m365_folder_cache_remove (CamelM365Folder *m365_folder,
+ 	return ret;
+ }
++/* Drop the saved MIME so Camel's next get_message downloads it.
++ * get_message_sync returns the cache file when one exists, so a cut-off
++ * download would stay cut off forever. */
++void
++camel_m365_folder_refresh_message_cache (CamelFolder *folder,
++					  const gchar *uid)
++{
++	g_return_if_fail (CAMEL_IS_M365_FOLDER (folder));
++	g_return_if_fail (uid != NULL);
++
++	m365_folder_cache_remove (CAMEL_M365_FOLDER (folder), uid, NULL);
++}
+ 
+ static CamelStream *
+@@ -781,8 +793,77 @@
+ 	CamelFolderChangeInfo *changes;
+ 	GPtrArray *removed_uids; /* gchar * - from the Camel string pool */
+ 	GHashTable *known_uids; /* (nullable) if not NULL, then holds currently known UID-s and which left are removed; it's when checking without delta link */
++	gboolean checkpointed; /* a finished Graph page already saved its nextLink */
+ } SummaryDeltaData;
+ 
++static void
++letter_m365_load_pending_removed (CamelM365FolderSummary *summary,
++				  SummaryDeltaData *sdd)
++{
++	gchar *blob, **uids;
++	gint ii;
++
++	blob = camel_m365_folder_summary_dup_pending_removed (summary);
++	if (blob == NULL || *blob == '\0') {
++		g_free (blob);
++		return;
++	}
++
++	uids = g_strsplit (blob, "\n", -1);
++	for (ii = 0; uids != NULL && uids[ii] != NULL; ii++) {
++		if (uids[ii][0] == '\0')
++			continue;
++
++		if (sdd->removed_uids == NULL)
++			sdd->removed_uids = g_ptr_array_new_with_free_func ((GDestroyNotify) camel_pstring_free);
++		g_ptr_array_add (sdd->removed_uids, (gpointer) camel_pstring_strdup (uids[ii]));
++	}
++
++	g_strfreev (uids);
++	g_free (blob);
++}
++
++/* Save the resume URL after a page that is not the last one. Adds are already
++ * in the summary. Removals stay listed until the walk reaches its deltaLink. */
++static void
++letter_m365_note_page_checkpoint (SummaryDeltaData *sdd,
++				  EM365Connection *cnc)
++{
++	const gchar *next_link;
++	const gchar *delta_link;
++	CamelM365FolderSummary *m365_summary;
++	GString *pending;
++	guint ii;
++
++	next_link = g_object_get_data (G_OBJECT (cnc), "letter-m365-page-next");
++	delta_link = g_object_get_data (G_OBJECT (cnc), "letter-m365-page-delta");
++	if (delta_link != NULL && *delta_link != '\0')
++		return;
++	if (next_link == NULL || *next_link == '\0')
++		return;
++
++	m365_summary = CAMEL_M365_FOLDER_SUMMARY (camel_folder_get_folder_summary (sdd->folder));
++	camel_m365_folder_summary_set_delta_link (m365_summary, next_link);
++
++	pending = g_string_new ("");
++	if (sdd->removed_uids != NULL) {
++		for (ii = 0; ii < sdd->removed_uids->len; ii++) {
++			const gchar *uid = g_ptr_array_index (sdd->removed_uids, ii);
++
++			if (uid == NULL || *uid == '\0')
++				continue;
++			if (pending->len > 0)
++				g_string_append_c (pending, '\n');
++			g_string_append (pending, uid);
++		}
++	}
++	camel_m365_folder_summary_set_pending_removed (m365_summary, pending->len > 0 ? pending->str : NULL);
++	g_string_free (pending, TRUE);
++
++	m365_folder_save_summary (CAMEL_M365_FOLDER (sdd->folder));
++	sdd->checkpointed = TRUE;
++}
++
+ static gboolean
+ m365_folder_got_summary_messages_cb (EM365Connection *cnc,
+ 				     const GSList *results, /* JsonObject * - the returned objects from the server */
+@@ -801,6 +870,16 @@
+ 	if (!summary)
+ 		return FALSE;
+ 
++	if (g_cancellable_is_cancelled (cancellable))
++		return FALSE;
++
++	/* Letter reads this from the other thread. A page of updates or
++	 * deletions does not change the summary UID count, so that count
++	 * alone cannot tell a live delta from a silent socket. */
++	g_object_set_data (G_OBJECT (sdd->folder), "letter-m365-delta-pages",
++		GUINT_TO_POINTER (GPOINTER_TO_UINT (
++			g_object_get_data (G_OBJECT (sdd->folder), "letter-m365-delta-pages")) + 1));
++
+ 	camel_folder_freeze (sdd->folder);
+ 
+ 	for (link = (GSList *) results; link; link = g_slist_next (link)) {
+@@ -859,6 +938,19 @@
+ 
+ 	camel_folder_thaw (sdd->folder);
+ 
++	letter_m365_note_page_checkpoint (sdd, cnc);
++
++	/* A finished page is saved. Stop before the next page when send or
++	 * the timer asked this walk to yield. The last page still completes
++	 * so removals can be applied. */
++	if (g_cancellable_is_cancelled (cancellable)) {
++		const gchar *delta_link;
++
++		delta_link = g_object_get_data (G_OBJECT (cnc), "letter-m365-page-delta");
++		if (delta_link == NULL || *delta_link == '\0')
++			return FALSE;
++	}
++
+ 	return TRUE;
+ }
+ 
+@@ -905,6 +997,8 @@
+ 	sdd.changes = NULL;
+ 	sdd.removed_uids = NULL;
+ 	sdd.known_uids = NULL;
++	sdd.checkpointed = FALSE;
++	letter_m365_load_pending_removed (m365_folder_summary, &sdd);
+ 
+ 	if (!curr_delta_link)
+ 		sdd.known_uids = camel_folder_summary_get_hash (folder_summary);
+@@ -952,19 +1046,41 @@
  
  	g_clear_pointer (&sdd.known_uids, g_hash_table_unref);
  
@@ -11,23 +152,25 @@
 -	}
 -
 -	m365_folder_save_summary (m365_folder);
--
--	if (sdd.changes) {
--		if (camel_folder_change_info_changed (sdd.changes))
--			camel_folder_changed (folder, sdd.changes);
--
--		camel_folder_change_info_free (sdd.changes);
 +	/* Removals and save_summary used to run even when the delta walk
 +	 * failed. That committed a partial Online Archive summary and the
-+	 * next refresh restarted tip-first instead of from the delta link. */
++	 * next refresh restarted tip-first instead of from the delta link.
++	 * Each finished page already saved its nextLink. Failure keeps that
++	 * link and leaves removals for the walk that reaches the deltaLink. */
 +	if (success) {
++		camel_m365_folder_summary_set_pending_removed (m365_folder_summary, NULL);
++
 +		if (sdd.removed_uids) {
 +			camel_folder_summary_remove_uids (folder_summary, sdd.removed_uids);
 +			g_ptr_array_unref (sdd.removed_uids);
 +		}
-+
+ 
+-	if (sdd.changes) {
+-		if (camel_folder_change_info_changed (sdd.changes))
+-			camel_folder_changed (folder, sdd.changes);
 +		m365_folder_save_summary (m365_folder);
-+
+ 
+-		camel_folder_change_info_free (sdd.changes);
 +		if (sdd.changes) {
 +			if (camel_folder_change_info_changed (sdd.changes))
 +				camel_folder_changed (folder, sdd.changes);
@@ -38,11 +181,175 @@
 +			g_ptr_array_unref (sdd.removed_uids);
 +		if (sdd.changes)
 +			camel_folder_change_info_free (sdd.changes);
-+		/* Token-expired path clears the in-memory cursor before the
-+		 * full walk. Put it back when that walk does not finish. */
-+		camel_m365_folder_summary_set_delta_link (m365_folder_summary, curr_delta_link);
-+		g_warning ("M365 refresh_info for '%s' did not finish; summary and delta link left unchanged",
-+			camel_folder_get_display_name (folder));
++		if (!sdd.checkpointed) {
++			/* Token-expired path clears the in-memory cursor before the
++			 * full walk. Put it back when that walk does not finish. */
++			camel_m365_folder_summary_set_delta_link (m365_folder_summary, curr_delta_link);
++			g_warning ("M365 refresh_info for '%s' did not finish; summary and delta link left unchanged",
++				camel_folder_get_display_name (folder));
++		} else {
++			g_warning ("M365 refresh_info for '%s' did not finish; page checkpoint kept",
++				camel_folder_get_display_name (folder));
++		}
  	}
  
  	if (local_error) {
+--- a/src/Microsoft365/camel/camel-m365-folder-summary.c
++++ b/src/Microsoft365/camel/camel-m365-folder-summary.c
+@@ -17,6 +17,7 @@
+ struct _CamelM365FolderSummaryPrivate {
+ 	GMutex property_lock;
+ 	gchar *delta_link;
++	gchar *pending_removed; /* newline-separated UIDs, applied when the delta walk finishes */
+ 	gint32 version;
+ };
+ 
+@@ -44,16 +45,35 @@
+ 		delta_link = part + 1;
+ 
+ 	/* Do not call camel_m365_folder_summary_set_delta_link() here,
+-	   to not mark the summary dirty after load. */
++	   to not mark the summary dirty after load. A newline, when present,
++	   separates the resume URL from UIDs removed on pages already saved. */
+ 	LOCK (m365_summary);
+ 
++	g_clear_pointer (&m365_summary->priv->pending_removed, g_free);
++
+ 	if (m365_summary->priv->version < 2) {
+ 		/* the list of summary items to fetch changed for version 2,
+ 		   thus use a new delta link, to reflect it */
+ 		g_clear_pointer (&m365_summary->priv->delta_link, g_free);
+-	} else if (g_strcmp0 (m365_summary->priv->delta_link, delta_link) != 0) {
+-		g_free (m365_summary->priv->delta_link);
+-		m365_summary->priv->delta_link = g_strdup (delta_link);
++	} else {
++		const gchar *nl = delta_link != NULL ? strchr (delta_link, '\n') : NULL;
++		gchar *link_copy = NULL;
++		const gchar *pending = NULL;
++
++		if (nl != NULL) {
++			link_copy = g_strndup (delta_link, nl - delta_link);
++			if (nl[1] != '\0')
++				pending = nl + 1;
++			delta_link = link_copy;
++		}
++
++		if (g_strcmp0 (m365_summary->priv->delta_link, delta_link) != 0) {
++			g_free (m365_summary->priv->delta_link);
++			m365_summary->priv->delta_link = g_strdup (delta_link);
++		}
++		if (pending != NULL)
++			m365_summary->priv->pending_removed = g_strdup (pending);
++		g_free (link_copy);
+ 	}
+ 
+ 	UNLOCK (m365_summary);
+@@ -74,7 +94,13 @@
+ 
+ 	delta_link = camel_m365_folder_summary_dup_delta_link (m365_summary);
+ 
+-	inout_record->bdata = g_strdup_printf ("%d %s", CAMEL_M365_FOLDER_SUMMARY_VERSION, delta_link ? delta_link : "");
++	LOCK (m365_summary);
++	if (m365_summary->priv->pending_removed != NULL && m365_summary->priv->pending_removed[0] != '\0')
++		inout_record->bdata = g_strdup_printf ("%d %s\n%s", CAMEL_M365_FOLDER_SUMMARY_VERSION,
++			delta_link ? delta_link : "", m365_summary->priv->pending_removed);
++	else
++		inout_record->bdata = g_strdup_printf ("%d %s", CAMEL_M365_FOLDER_SUMMARY_VERSION, delta_link ? delta_link : "");
++	UNLOCK (m365_summary);
+ 
+ 	g_free (delta_link);
+ 
+@@ -93,6 +119,7 @@
+ 	CamelM365FolderSummary *m365_summary = CAMEL_M365_FOLDER_SUMMARY (object);
+ 
+ 	g_free (m365_summary->priv->delta_link);
++	g_free (m365_summary->priv->pending_removed);
+ 	g_mutex_clear (&m365_summary->priv->property_lock);
+ 
+ 	/* Chain up to parent's method. */
+@@ -192,6 +219,44 @@
+ }
+ 
+ void
++camel_m365_folder_summary_set_pending_removed (CamelM365FolderSummary *m365_summary,
++					       const gchar *pending_removed)
++{
++	gboolean changed = FALSE;
++
++	g_return_if_fail (CAMEL_IS_M365_FOLDER_SUMMARY (m365_summary));
++
++	LOCK (m365_summary);
++
++	if (g_strcmp0 (m365_summary->priv->pending_removed, pending_removed) != 0) {
++		g_free (m365_summary->priv->pending_removed);
++		m365_summary->priv->pending_removed = g_strdup (pending_removed);
++		changed = TRUE;
++	}
++
++	UNLOCK (m365_summary);
++
++	if (changed)
++		camel_folder_summary_touch (CAMEL_FOLDER_SUMMARY (m365_summary));
++}
++
++gchar *
++camel_m365_folder_summary_dup_pending_removed (CamelM365FolderSummary *m365_summary)
++{
++	gchar *pending_removed;
++
++	g_return_val_if_fail (CAMEL_IS_M365_FOLDER_SUMMARY (m365_summary), NULL);
++
++	LOCK (m365_summary);
++
++	pending_removed = g_strdup (m365_summary->priv->pending_removed);
++
++	UNLOCK (m365_summary);
++
++	return pending_removed;
++}
++
++void
+ camel_m365_folder_summary_clear (CamelFolderSummary *summary)
+ {
+ 	CamelFolderChangeInfo *changes;
+--- a/src/Microsoft365/camel/camel-m365-folder-summary.h
++++ b/src/Microsoft365/camel/camel-m365-folder-summary.h
+@@ -54,6 +54,11 @@
+ void		camel_m365_folder_summary_set_delta_link(CamelM365FolderSummary *m365_summary,
+ 							 const gchar *delta_link);
+ gchar *		camel_m365_folder_summary_dup_delta_link(CamelM365FolderSummary *m365_summary);
++void		camel_m365_folder_summary_set_pending_removed
++							(CamelM365FolderSummary *m365_summary,
++							 const gchar *pending_removed);
++gchar *		camel_m365_folder_summary_dup_pending_removed
++							(CamelM365FolderSummary *m365_summary);
+ void		camel_m365_folder_summary_clear		(CamelFolderSummary *summary);
+ gboolean	camel_m365_folder_summary_update_message_info_flags
+ 							(CamelFolderSummary *summary,
+--- a/src/Microsoft365/common/e-m365-connection.c
++++ b/src/Microsoft365/common/e-m365-connection.c
+@@ -1408,6 +1408,13 @@
+ 		}
+ 	}
+ 
++	/* Letter's folder callback reads these to save a page checkpoint.
++	 * nextLink resumes the open delta; deltaLink is only on the last page. */
++	g_object_set_data_full (G_OBJECT (cnc), "letter-m365-page-next",
++		(out_next_link != NULL && *out_next_link != NULL && **out_next_link != '\0') ? g_strdup (*out_next_link) : NULL, g_free);
++	g_object_set_data_full (G_OBJECT (cnc), "letter-m365-page-delta",
++		(delta_link != NULL && *delta_link != '\0') ? g_strdup (delta_link) : NULL, g_free);
++
+ 	if (response_data->json_func)
+ 		can_continue = response_data->json_func (cnc, items, response_data->func_user_data, cancellable, error);
+ 
+--- a/src/Microsoft365/camel/camel-m365-folder.h
++++ b/src/Microsoft365/camel/camel-m365-folder.h
+@@ -63,5 +63,8 @@ void		camel_m365_folder_set_check_folder
+ void		camel_m365_folder_set_check_folder
+ 						(CamelM365Folder *self,
+ 						 gboolean check_folder);
++void		camel_m365_folder_refresh_message_cache
++						(CamelFolder *folder,
++						 const gchar *uid);
+ 
+ G_END_DECLS

@@ -789,17 +789,9 @@ msgstr "È già in corso un aggiornamento di una cartella."
 msgid "Update “%s” from server?"
 msgstr "Aggiornare “%s” dal server?"
 
-#: src/window.vala:9461
-msgid ""
-"Letter asks the server for new message headers and merges them into its "
-"local index. Large folders run in timed slices; sending waits until the "
-"current slice finishes (the sync is not interrupted). Between slices Letter "
-"handles new mail and queued moves."
-msgstr ""
-"Letter chiede al server le nuove intestazioni e le unisce al proprio indice "
-"locale. Le cartelle grandi usano slice a tempo; l’invio aspetta la fine "
-"dello slice in corso (la sync non viene interrotta). Tra uno slice e l’altro "
-"Letter gestisce la nuova posta e gli spostamenti in coda."
+#: src/window.vala:8566
+msgid "Letter asks the server for this folder’s headers and merges them into its local index. Sending waits until that download finishes."
+msgstr "Letter chiede al server le intestazioni di questa cartella e le unisce al proprio indice locale. L’invio attende la fine di quel download."
 
 #: src/window.vala:9840 src/window.vala:9872
 msgid "Remove All Bookmarks"

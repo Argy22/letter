@@ -121,52 +121,43 @@ public class Mail.Window : Adw.ApplicationWindow {
     private Message? open_message;
     private Conversation? open_conversation;
     private uint sync_source;
-    private uint folder_scout_source;
-    private uint folder_scout_cursor;
-    private bool folder_scout_running;
-    /* Progressive refresh_info budget for scout-driven bulk aligns. */
-    private HashTable<string, int64?> bulk_refresh_next_allowed;
-    private HashTable<string, int> bulk_refresh_level;
-    private HashTable<string, int64?> tip_refresh_last;
-    /* Account keys that already got the once-per-session silent Archive Graph refresh. */
-    private HashTable<string, uint8> startup_bulk_graph_done;
-    /* Max Letter headers ever seen per folder — survives tip-wave false shrinks. */
+    /* Max Letter headers ever seen per folder — survives a false shrink. */
     private HashTable<string, uint> header_count_high_water;
-    /* Folders that still need Graph header waves after a partial Update Folder. */
-    private HashTable<string, uint8> deep_sync_pending;
-    /* When RSS stays above the soft ceiling after flush, park deep sync briefly. */
-    private int64 deep_sync_rss_defer_until;
-    private uint deep_sync_rss_defer_source;
-    /* Camel align slice: Update Folder (FORCE_UNTIL_DONE) or deep-sync wave
-     * (soft-extended FORCE budget). Mid-slice nothing cancels Graph for Send /
-     * open-body / timer — they wait. User Update Folder is Archive-first. */
+    /* Header refresh_info in flight. A short tip is left alone. A long
+     * until-done walk can be cut for send or the timer: each finished Graph
+     * page is already saved, so the next slice continues from that page. */
     private bool camel_align_busy;
     private string? camel_align_name;
     private string? camel_align_full_name;
-    /* True only for a folder-open until-done. Startup / Update Folder must
-     * not be cancelled when the user switches folder. */
-    private bool camel_align_from_open;
     private Cancellable? camel_align_cancellable;
     private uint camel_align_had_headers;
     private bool camel_align_user_force;
-    private uint camel_align_yield_source;
-    /* True for the ops window between FORCE slices (blocks premature deep resume). */
-    private bool camel_align_yielding;
-    private const int CAMEL_ALIGN_YIELD_SECONDS = 20;
-    /* Timer/F5 while camel_align_busy: park once; flush at settle or F5 yield. */
+    private bool camel_align_until_done;
+    /* Send asked a long header walk to stop at the last saved page. */
+    private bool sync_yielded_for_send;
+    /* Timer/F5 while a header slice or folder sync is running. */
     private bool mail_check_parked;
     private bool mail_check_parked_force_tree;
-    /* F5 during Update Folder — one Inbox window at the next slice boundary. */
     private bool mail_check_wanted;
-    private string? body_fill_folder;
-    private bool sync_pump_running;
     private bool mailbox_bootstrapping;
     private bool folder_tree_needs_refresh;
-    private bool continue_startup_after_tree;
+    /* False only while the first cached folder of this account is shown.
+     * That open is startup sync. A later click is folder sync. */
+    private bool folder_clicks_sync;
+    private bool startup_sync_active;
+    private bool scheduled_sync_active;
+    private bool folder_sync_active;
+    private uint folder_sync_serial;
+    private uint folder_sync_running_serial;
+    private string? folder_sync_pending_name;
+    private bool body_fetch_active;
+    private bool send_in_progress;
+    /* startup sync opens the app, scheduled sync is the timer and F5,
+     * folder sync is a click, body fetch is one missing message body. */
+    private string sync_log_name = "startup sync";
     private HashTable<string, uint8> notified_uids;
     /* Aggregate sound: at most one beep per burst / mail-check cycle. */
     private int64 last_notification_sound_at;
-    private GenericArray<MailSyncJob> sync_jobs;
     private bool restoring_selection;
     private string? pending_select_uid;
     private bool tearing_down;
@@ -176,37 +167,19 @@ public class Mail.Window : Adw.ApplicationWindow {
     private Gtk.SizeGroup account_header_sizes;
     private Gtk.SizeGroup account_row_sizes;
     private uint sync_status_token;
-    private uint flush_status_source;
+    /* Foreground lines (send, search, open) own the bar. Startup sync and
+     * scheduled sync keep a line underneath and show it again when the
+     * foreground line goes away. */
+    private uint foreground_status_token;
+    private string? background_status_text;
+    private int background_status_holders;
     private uint send_status_token;
     private bool unread_only;
     private bool conversation_view;
     private uint conversation_index_source;
     private uint mark_seen_source;
-    private int64 last_full_align;
-    private const int FULL_ALIGN_SECONDS = 300;
-    /* Thousands missing — not Online Archive ±noise. Scout / deep-sync resume. */
+    /* Thousands missing — not Online Archive ±noise. */
     private const int LARGE_HEADER_GAP = 500;
-    /* Auto Update Folder from Camel FolderInfo totals is disabled: those
-     * numbers are local saved-count, not Graph totalItemCount (phase 2). */
-    private const bool SCOUT_AUTO_FORCE_FROM_CAMEL_COUNTS = false;
-    private const double REMOTE_GAP_FORCE_RATIO = 0.05;
-    private const int64 AUTO_FORCE_COOLDOWN = 24 * TimeSpan.HOUR;
-    private const int64 DEEP_SYNC_RSS_DEFER = 3 * 60 * TimeSpan.SECOND;
-    private const int SYNC_KIND_TREE = 0;
-    private const int SYNC_KIND_HEADERS = 1;
-    private const int SYNC_KIND_BODIES = 2;
-    private const int SYNC_KIND_CACHE_ALIGN = 3;
-    private const int RANK_NEW_MAIL = 10;
-    private const int RANK_FORCE_FOLDER = 5;
-    private const int RANK_SELECTED_HEADERS = 20;
-    private const int RANK_SELECTED_BODIES = 30;
-    private const int RANK_TREE = 40;
-    private const int RANK_BACKGROUND = 100;
-    private const int RANK_CACHE = 150;
-    private const int RANK_CACHE_ALIGN = 500;
-    private const int RANK_IDLE_BULK = 900;
-    private const int IDLE_BULK_FIRST_SECONDS = 45;
-    private const int IDLE_BULK_STEP_SECONDS = 25;
     private SearchQuery search_query = new SearchQuery ();
     private string search_text = "";
     private GenericArray<string> search_tokens = new GenericArray<string> ();
@@ -220,9 +193,6 @@ public class Mail.Window : Adw.ApplicationWindow {
     private bool search_deeper_consumed;
     private const int SEARCH_LIMIT = 400;
     private uint display_messages_generation;
-    /* Body prefetch tip window (newest-first index); scroll extends it. */
-    private HashTable<string, int> body_prefetch_extent;
-    private uint body_prefetch_scroll_source;
 
     private const ActionEntry[] WINDOW_ACTIONS = {
         { "toggle-sidebar", on_toggle_sidebar },
@@ -315,13 +285,7 @@ public class Mail.Window : Adw.ApplicationWindow {
                 this.collapsed_folders.set (key, 1);
         }
         this.notified_uids = new HashTable<string, uint8> (str_hash, str_equal);
-        this.bulk_refresh_next_allowed = new HashTable<string, int64?> (str_hash, str_equal);
-        this.bulk_refresh_level = new HashTable<string, int> (str_hash, str_equal);
-        this.tip_refresh_last = new HashTable<string, int64?> (str_hash, str_equal);
-        this.startup_bulk_graph_done = new HashTable<string, uint8> (str_hash, str_equal);
         this.header_count_high_water = new HashTable<string, uint> (str_hash, str_equal);
-        this.deep_sync_pending = new HashTable<string, uint8> (str_hash, str_equal);
-        this.sync_jobs = new GenericArray<MailSyncJob> ();
         this.message_reader = new MessageReader ();
         this.message_reader.set_contacts (app.contacts);
         this.message_reader.invitation_respond.connect ((invitation, status) => {
@@ -527,8 +491,6 @@ public class Mail.Window : Adw.ApplicationWindow {
             vexpand = true,
             child = this.message_list,
         };
-        this.message_scrolled.edge_reached.connect (on_message_list_edge_reached);
-        this.body_prefetch_extent = new HashTable<string, int> (str_hash, str_equal);
         var search_bar = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 8) {
             hexpand = true,
         };
@@ -598,7 +560,6 @@ public class Mail.Window : Adw.ApplicationWindow {
         this.settings.changed["sync-interval"].connect (restart_sync_timer);
         this.settings.changed["body-cache-days"].connect (() => {
             this.mail_session?.reset_prefetch_progress ();
-            enqueue_cache_align ();
         });
         restart_sync_timer ();
 
@@ -685,7 +646,6 @@ public class Mail.Window : Adw.ApplicationWindow {
         this.mail_session.foreach_queued_move_hide ((account, from, uid) => {
             this.hidden_uids.set (hide_key (account, from, uid), 1);
         });
-        watch_local_flush_status ();
         this.mail_session.flush_pending_local_changes ();
     }
 
@@ -770,8 +730,6 @@ public class Mail.Window : Adw.ApplicationWindow {
 
         this.idle_cancellable?.cancel ();
         this.idle_cancellable = new Cancellable ();
-        this.sync_jobs = new GenericArray<MailSyncJob> ();
-        clear_all_bulk_refresh_backoff ();
 
         if (this.selected_account != null && accounts_are_same (this.selected_account, account))
             load_folders.begin (account);
@@ -921,53 +879,14 @@ public class Mail.Window : Adw.ApplicationWindow {
         return extras;
     }
 
-    private GenericArray<Folder> mailbox_sync_folders () {
-        mark_inbox_tree_on_sidebar ();
-        var folders = folders_from_tree (false);
-        folders.sort ((a, b) => {
-            int rank = mailbox_sync_rank (a) - mailbox_sync_rank (b);
-            if (rank != 0)
-                return rank;
-            if (a.kind == FolderKind.INBOX && b.kind != FolderKind.INBOX)
-                return -1;
-            if (b.kind == FolderKind.INBOX && a.kind != FolderKind.INBOX)
-                return 1;
-            return a.name.collate (b.name);
-        });
-        return folders;
-    }
-
-    private static int mailbox_sync_rank (Folder folder) {
-        if (folder.kind == FolderKind.INBOX)
-            return 0;
-        if (folder.watch_new_mail)
-            return 1;
-
-        switch (folder.kind) {
-            case FolderKind.SENT:
-                return 2;
-            case FolderKind.DRAFTS:
-                return 3;
-            case FolderKind.NORMAL:
-                return 4;
-            case FolderKind.ARCHIVE:
-            case FolderKind.ALL:
-                return 5;
-            case FolderKind.JUNK:
-                return 6;
-            case FolderKind.TRASH:
-                return 7;
-            default:
-                return 4;
-        }
-    }
 
     private void store_folder_messages (
         Account account,
         Folder folder,
         GenericArray<Message> messages,
         HashTable<string, uint8>? known_uids = null,
-        bool persist_disk = true
+        bool persist_disk = true,
+        bool accept_empty = false
     ) {
         var key = message_cache_key (account, folder);
         var previous = this.message_cache.get (key);
@@ -1010,8 +929,9 @@ public class Mail.Window : Adw.ApplicationWindow {
         int unread;
         message_counts (visible, out total, out unread);
         /* An empty *local* summary must not wipe server-derived tree badges
-         * (common for Trash on first open before align). Keep prior counts. */
-        if (visible.length > 0 || (folder.total <= 0 && folder.unread <= 0)) {
+         * (common for Trash on first open before align). Keep prior counts.
+         * accept_empty is a finished server walk that returned no UIDs. */
+        if (accept_empty || visible.length > 0 || (folder.total <= 0 && folder.unread <= 0)) {
             folder.unread = unread;
             /* Match the list we actually hold — never keep a Graph/Camel total
              * above the rows on screen (empty ListView + “9460 messaggi”). */
@@ -1026,30 +946,38 @@ public class Mail.Window : Adw.ApplicationWindow {
         sync_important_markers ();
         if (known.length > 0)
             notify_new_arrivals (account, folder, visible, known);
+        if (accept_empty && visible.length == 0)
+            clear_header_high_water (account, folder);
         if (persist_disk) {
-            /* Never overwrite a larger on-disk header list with a Camel/Graph
-             * partial — that dropped Archive from ~6k back to ~2.7k across
-             * restarts while body cache (GiB) still looked full. */
-            var prev_n = previous != null ? previous.length : 0;
-            var disk_n = disk_header_list_count (account, folder);
-            var floor = uint.max (prev_n, disk_n);
-            var water = header_high_water (account, folder);
-            var catastrophic = floor >= MailSession.HEADER_LIST_LARGE
-                && visible.length + LARGE_HEADER_GAP < floor
-                && (water == 0 || visible.length + LARGE_HEADER_GAP < water);
-            if (catastrophic) {
-                Utils.sync_log (
-                    "disk header cache skip shrink “%s” (%u ← floor %u ram %u disk %u, watermark %u)".printf (
-                        folder.name,
-                        visible.length,
-                        floor,
-                        prev_n,
-                        disk_n,
-                        water
-                    )
-                );
+            if (accept_empty && visible.length == 0) {
+                /* Write now. A debounced save of the previous list, or a
+                 * click before the 1.5s timer, would put the old index back. */
+                persist_empty_header_list_now (account, folder);
             } else {
-                queue_header_list_cache_save (account, folder, visible);
+                /* Never overwrite a larger on-disk header list with a Camel/Graph
+                 * partial — that dropped Archive from ~6k back to ~2.7k across
+                 * restarts while body cache (GiB) still looked full. */
+                var prev_n = previous != null ? previous.length : 0;
+                var disk_n = disk_header_list_count (account, folder);
+                var floor = uint.max (prev_n, disk_n);
+                var water = header_high_water (account, folder);
+                var catastrophic = floor >= MailSession.HEADER_LIST_LARGE
+                    && visible.length + LARGE_HEADER_GAP < floor
+                    && (water == 0 || visible.length + LARGE_HEADER_GAP < water);
+                if (catastrophic) {
+                    Utils.sync_log (
+                        "disk header cache skip shrink “%s” (%u ← floor %u ram %u disk %u, watermark %u)".printf (
+                            folder.name,
+                            visible.length,
+                            floor,
+                            prev_n,
+                            disk_n,
+                            water
+                        )
+                    );
+                } else {
+                    queue_header_list_cache_save (account, folder, visible);
+                }
             }
         }
         enforce_message_cache_ceiling ();
@@ -1105,14 +1033,6 @@ public class Mail.Window : Adw.ApplicationWindow {
      * Distinct from folder_is_large (header count). */
     private static bool folder_is_bulk_storage (Folder folder) {
         return MailSession.folder_is_heavy (folder)
-            || folder.kind == FolderKind.SENT;
-    }
-
-    /* Online Archive drifts Graph totals forever — never auto-Graph from scout.
-     * Letter merges tips via startup / Update Folder / tip wave; no Camel chase. */
-    private static bool folder_skips_scout_count_chase (Folder folder) {
-        return folder.kind == FolderKind.ARCHIVE
-            || folder.kind == FolderKind.ALL
             || folder.kind == FolderKind.SENT;
     }
 
@@ -1176,87 +1096,29 @@ public class Mail.Window : Adw.ApplicationWindow {
         }
     }
 
-    /* Letter short vs Graph totalItemCount — never shrink, ignore Online Archive noise. */
-    private static bool remote_gap_wants_force (uint local_headers, int remote_total) {
-        if (remote_total <= 0)
-            return false;
-        if ((uint) remote_total <= local_headers)
-            return false;
-        var gap = remote_total - (int) local_headers;
-        var threshold = int.max (
-            (int) (local_headers * REMOTE_GAP_FORCE_RATIO + 0.999),
-            LARGE_HEADER_GAP
-        );
-        return gap > threshold;
+    private void clear_header_high_water (Account account, Folder folder) {
+        this.header_count_high_water.set (message_cache_key (account, folder), 0);
+        save_header_high_water (account, folder, 0);
     }
 
-    private static string auto_force_at_file (Account account, Folder folder) {
-        return MailSession.header_list_cache_file (
-            account.source_uid ?? account.uid,
-            folder.full_name
-        ) + ".auto-force-at";
-    }
-
-    private bool auto_force_on_cooldown (Account account, Folder folder) {
-        var path = auto_force_at_file (account, folder);
-        if (!FileUtils.test (path, FileTest.IS_REGULAR))
-            return false;
-        string contents;
-        try {
-            FileUtils.get_contents (path, out contents);
-        } catch (Error e) {
-            return false;
-        }
-        var at = int64.parse (contents.strip ());
-        if (at <= 0)
-            return false;
-        var now = new DateTime.now_utc ().to_unix ();
-        return now < at + (AUTO_FORCE_COOLDOWN / TimeSpan.SECOND);
-    }
-
-    private void note_auto_force_cooldown (Account account, Folder folder) {
-        var path = auto_force_at_file (account, folder);
-        var dir = Path.get_dirname (path);
-        try {
-            File.new_for_path (dir).make_directory_with_parents ();
-        } catch (Error e) {
-            if (!(e is IOError.EXISTS)) {
-                debug ("Could not write auto-force cooldown: %s", e.message);
-                return;
-            }
-        }
-        var now = new DateTime.now_utc ().to_unix ();
-        try {
-            FileUtils.set_contents (path, "%lld\n".printf (now));
-        } catch (Error e) {
-            debug ("Could not write auto-force cooldown: %s", e.message);
-        }
-    }
-
-    private bool auto_force_slot_busy () {
-        if (this.camel_align_busy || this.camel_align_yielding || this.camel_align_yield_source != 0)
-            return true;
-        return this.deep_sync_pending.size () > 0;
-    }
-
-    private bool folder_deep_sync_pending (Account account, Folder folder) {
-        return this.deep_sync_pending.contains (message_cache_key (account, folder));
-    }
-
-    private void set_deep_sync_pending (Account account, Folder folder, bool pending) {
+    /* Empty Trash / a finished server walk at zero. Cancels a pending save of
+     * the previous list so that snapshot cannot land after this write. */
+    private void persist_empty_header_list_now (Account account, Folder folder) {
         var key = message_cache_key (account, folder);
-        if (pending)
-            this.deep_sync_pending.set (key, 1);
-        else
-            this.deep_sync_pending.remove (key);
+        var existing = this.header_cache_save_sources.get (key);
+        if (existing != 0) {
+            Source.remove (existing);
+            this.header_cache_save_sources.remove (key);
+        }
+        clear_header_high_water (account, folder);
+        save_header_list_cache (
+            account.source_uid ?? account.uid,
+            folder.full_name,
+            folder.name,
+            new GenericArray<Message> ()
+        );
     }
 
-    private int folder_known_header_gap (Account account, Folder folder, uint local_total) {
-        var water = (int) header_high_water (account, folder);
-        var tree = folder.total;
-        var expected = int.max (water, tree);
-        return scout_total_gap (expected, local_total);
-    }
 
     private static bool folder_is_incoming_watch (Folder folder) {
         if (folder.is_virtual_view || folder.is_gmail_namespace)
@@ -1264,24 +1126,6 @@ public class Mail.Window : Adw.ApplicationWindow {
         if (folder_is_bulk_storage (folder))
             return false;
         return folder.watch_new_mail || folder.kind == FolderKind.INBOX;
-    }
-
-    private void enqueue_incoming_folder_sync (int header_rank = RANK_BACKGROUND) {
-        mark_inbox_tree_on_sidebar ();
-        var folders = mailbox_sync_folders ();
-        uint queued = 0;
-        for (uint i = 0; i < folders.length; i++) {
-            var folder = folders[i];
-            if (!folder_is_incoming_watch (folder))
-                continue;
-            enqueue_sync_job (SYNC_KIND_HEADERS, folder, header_rank);
-            if (!folder_skips_body_prefetch (folder))
-                enqueue_sync_job (SYNC_KIND_BODIES, folder, header_rank + 1);
-            queued++;
-        }
-        Utils.sync_log ("incoming watch sync: queued %u inbox-tree folders".printf (queued));
-        enqueue_pending_deep_syncs ();
-        pump_sync.begin ();
     }
 
     private async void hydrate_folder_headers (Account account, Folder folder, Cancellable cancellable) {
@@ -1429,6 +1273,8 @@ public class Mail.Window : Adw.ApplicationWindow {
         var known = snapshot_uids (cached);
         var current = is_current_folder (folder);
         var t0 = Utils.sync_tick ();
+        this.camel_align_until_done =
+            refresh_timeout_seconds == MailSession.REFRESH_INFO_FORCE_UNTIL_DONE;
         var budget = refresh_timeout_seconds == MailSession.REFRESH_INFO_SKIP
             ? "skip"
             : (refresh_timeout_seconds == 0 ? "default" : "%us".printf (refresh_timeout_seconds));
@@ -1470,7 +1316,15 @@ public class Mail.Window : Adw.ApplicationWindow {
                 ));
                 return;
             }
-            store_folder_messages (account, folder, messages, known);
+            /* A finished walk that returns no UIDs is the server folder.
+             * Persist that empty list; a later open must not resurrect the
+             * previous disk index, and the click must not cover it with the
+             * aligning spinner. */
+            var accept_empty = messages.length == 0
+                && refresh_timeout_seconds != MailSession.REFRESH_INFO_SKIP
+                && !this.mail_session.last_list_refresh_incomplete
+                && !this.mail_session.last_list_refresh_failed;
+            store_folder_messages (account, folder, messages, known, true, accept_empty);
             Utils.sync_log ("align “%s” ok %s → %u headers".printf (
                 folder.name,
                 Utils.sync_ms (t0),
@@ -1485,158 +1339,10 @@ public class Mail.Window : Adw.ApplicationWindow {
         }
     }
 
-    private Folder? sync_job_folder (MailSyncJob job) {
-        if (job.folder == null)
-            return null;
 
-        var folders = folders_from_tree ();
-        for (uint i = 0; i < folders.length; i++) {
-            if (folders[i].full_name == job.folder.full_name)
-                return folders[i];
-        }
-        return job.folder;
-    }
-
-    private void enqueue_sync_job (
-        int kind,
-        Folder? folder,
-        int rank,
-        uint refresh_timeout = 0,
-        bool force_graph_refresh = false,
-        bool open_folder_fill = false
-    ) {
-        var name = folder != null ? folder.full_name : "";
-        for (uint i = 0; i < this.sync_jobs.length; i++) {
-            var job = this.sync_jobs[i];
-            var job_name = job.folder != null ? job.folder.full_name : "";
-            if (job.kind != kind || job_name != name)
-                continue;
-            if (rank < job.rank)
-                job.rank = rank;
-            if (folder != null)
-                job.folder = folder;
-            /* A startup / Update Folder until-done already queued must stay
-             * that job. Raising its rank is enough; do not retag it as a
-             * folder-open fill (switching away would cancel it). */
-            var startup_until_done = job.force_graph_refresh
-                && !job.open_folder_fill
-                && MailSession.is_force_refresh_timeout (job.refresh_timeout_seconds);
-            if (open_folder_fill
-                && MailSession.is_force_refresh_timeout (refresh_timeout)
-                && !startup_until_done) {
-                job.refresh_timeout_seconds = refresh_timeout;
-                job.force_graph_refresh = true;
-                job.open_folder_fill = true;
-            } else {
-                job.refresh_timeout_seconds = merge_refresh_timeout (
-                    job.refresh_timeout_seconds,
-                    refresh_timeout
-                );
-                if (force_graph_refresh)
-                    job.force_graph_refresh = true;
-                if (open_folder_fill && !startup_until_done)
-                    job.open_folder_fill = true;
-            }
-            return;
-        }
-
-        var job = new MailSyncJob ();
-        job.kind = kind;
-        job.folder = folder;
-        job.rank = rank;
-        job.refresh_timeout_seconds = refresh_timeout;
-        job.force_graph_refresh = force_graph_refresh;
-        job.open_folder_fill = open_folder_fill;
-        this.sync_jobs.add (job);
-    }
-
-    /* Put a job the pump already took back on the queue without dropping
-     * folder-open / until-done flags. */
-    private void requeue_sync_job (MailSyncJob job) {
-        enqueue_sync_job (
-            job.kind,
-            job.folder,
-            job.rank,
-            job.refresh_timeout_seconds,
-            job.force_graph_refresh,
-            job.open_folder_fill
-        );
-    }
-
-    private static uint merge_refresh_timeout (uint a, uint b) {
-        if (a == MailSession.REFRESH_INFO_SKIP)
-            return b;
-        if (b == MailSession.REFRESH_INFO_SKIP)
-            return a;
-        /* 0 = default full path (F5 / explicit sync) — wins over a short scout budget. */
-        if (a == 0 || b == 0)
-            return 0;
-        return uint.max (a, b);
-    }
-
-    private void enqueue_new_mail_sync () {
-        enqueue_incoming_folder_sync (RANK_NEW_MAIL);
-    }
-
-    /* Drop queued low-priority jobs so send / Inbox can run *after* the current
-     * Camel align slice. Never cancel an in-flight FORCE refresh_info — that
-     * shreds the Camel summary on Online Archive (journal: 2250→110). */
-    private void preempt_background_sync (string reason) {
-        uint dropped = 0;
-        for (int i = (int) this.sync_jobs.length - 1; i >= 0; i--) {
-            if (this.sync_jobs[i].rank < RANK_BACKGROUND)
-                continue;
-            if (job_is_camel_align_slice (this.sync_jobs[i]))
-                continue;
-            if (this.sync_jobs[i].kind == SYNC_KIND_BODIES
-                || this.sync_jobs[i].kind == SYNC_KIND_CACHE_ALIGN)
-                continue;
-            this.sync_jobs.remove_index (i);
-            dropped++;
-        }
-        /* Mid-slice: keep Graph running; only the ~5 min budget ends the wave. */
-        if (this.camel_align_busy) {
-            Utils.sync_log (
-                "preempt sync: %s (dropped %u, camel align “%s” kept, pump=%s)".printf (
-                    reason,
-                    dropped,
-                    this.camel_align_name ?? "?",
-                    this.sync_pump_running ? "busy" : "idle"
-                )
-            );
-            return;
-        }
-        if (this.idle_cancellable != null && !this.idle_cancellable.is_cancelled ())
-            this.idle_cancellable.cancel ();
-        this.idle_cancellable = new Cancellable ();
-        Utils.sync_log ("preempt sync: %s (dropped %u, queue=%u, pump=%s)".printf (
-            reason,
-            dropped,
-            this.sync_jobs.length,
-            this.sync_pump_running ? "busy" : "idle"
-        ));
-    }
-
-    /* User-initiated Update Folder (rank ≤ FORCE). */
-    private static bool job_is_force_folder_refresh (MailSyncJob job) {
-        return job_is_camel_align_slice (job) && job.rank <= RANK_FORCE_FOLDER;
-    }
-
-    /* Any FORCE-budget header wave — Update Folder or deep-sync continuation. */
-    private static bool job_is_camel_align_slice (MailSyncJob job) {
-        return job.force_graph_refresh
-            && job.kind == SYNC_KIND_HEADERS
-            && MailSession.is_force_refresh_timeout (job.refresh_timeout_seconds);
-    }
-
-    /* Background deep-sync continuation after a partial align (yields between slices). */
-    private static bool job_is_deep_sync_continue (MailSyncJob job) {
-        return job_is_camel_align_slice (job) && job.rank >= RANK_BACKGROUND;
-    }
-
-    private bool begin_camel_align_slice (Folder folder, bool user_force, bool from_open = false) {
-        /* Never cancel an in-flight Graph refresh_info — mid-cancel shreds
-         * M365 Camel summaries. A second FORCE must wait for the ops yield. */
+    private bool begin_camel_align_slice (Folder folder, bool user_force) {
+        /* A second slice waits. Send and the sync timer cancel a long
+         * until-done themselves; each finished Graph page is already saved. */
         if (this.camel_align_busy) {
             Utils.sync_log (
                 "camel align refuse begin “%s” — already busy on “%s” (no mid-slice cancel)".printf (
@@ -1646,17 +1352,10 @@ public class Mail.Window : Adw.ApplicationWindow {
             );
             return false;
         }
-        if (this.camel_align_yielding || this.camel_align_yield_source != 0) {
-            Utils.sync_log (
-                "camel align refuse begin “%s” — ops yield in progress".printf (folder.name)
-            );
-            return false;
-        }
 
         this.camel_align_busy = true;
         this.camel_align_name = folder.name;
         this.camel_align_full_name = folder.full_name;
-        this.camel_align_from_open = from_open;
         this.camel_align_user_force = user_force;
         this.camel_align_had_headers = 0;
         var account = this.selected_account;
@@ -1665,24 +1364,11 @@ public class Mail.Window : Adw.ApplicationWindow {
             if (cached != null)
                 this.camel_align_had_headers = cached.length;
         }
-        /* Dedicated cancellable — not idle_cancellable — so preempt cannot
-         * abort Graph mid-rebuild. User Update Folder runs until Graph finishes
-         * (FORCE_UNTIL_DONE); idle deep slices still use a soft-extended budget. */
         this.camel_align_cancellable = new Cancellable ();
-        var mode = user_force
-            ? "until-done"
-            : from_open
-                ? "folder-open until-done"
-                : "budget=%us".printf (MailSession.REFRESH_INFO_FORCE);
-        var why = user_force
-            ? "Update Folder"
-            : from_open
-                ? "folder open"
-                : "deep slice";
+        var why = user_force ? "Update Folder" : this.sync_log_name;
         Utils.sync_log (
-            "camel align begin “%s” (%s, exclusive, %s, had=%u)".printf (
+            "camel align begin “%s” (%s, exclusive, had=%u)".printf (
                 folder.name,
-                mode,
                 why,
                 this.camel_align_had_headers
             )
@@ -1693,11 +1379,7 @@ public class Mail.Window : Adw.ApplicationWindow {
     private void end_camel_align_slice () {
         if (!this.camel_align_busy)
             return;
-        var why = this.camel_align_user_force
-            ? "Update Folder"
-            : this.camel_align_from_open
-                ? "folder open"
-                : "deep slice";
+        var why = this.camel_align_user_force ? "Update Folder" : this.sync_log_name;
         Utils.sync_log (
             "camel align end “%s” (%s)".printf (
                 this.camel_align_name ?? "?",
@@ -1707,9 +1389,9 @@ public class Mail.Window : Adw.ApplicationWindow {
         this.camel_align_busy = false;
         this.camel_align_name = null;
         this.camel_align_full_name = null;
-        this.camel_align_from_open = false;
         this.camel_align_cancellable = null;
         this.camel_align_user_force = false;
+        this.camel_align_until_done = false;
     }
 
     /* Run a parked timer/F5 mail-check once Graph is free (settle or yield). */
@@ -1732,57 +1414,6 @@ public class Mail.Window : Adw.ApplicationWindow {
         schedule_mail_check.begin (force);
     }
 
-    /* Immediate next FORCE slice — Archive-first Update Folder (no 20s yield). */
-    private void chain_camel_align_slice_now (
-        Account account,
-        Folder folder,
-        uint had_before,
-        uint local,
-        bool incomplete
-    ) {
-        this.camel_align_yielding = false;
-        if (this.camel_align_yield_source != 0) {
-            Source.remove (this.camel_align_yield_source);
-            this.camel_align_yield_source = 0;
-        }
-        if (this.tearing_down || this.mail_session == null)
-            return;
-        if (!network_is_available ())
-            return;
-        if (!folder_deep_sync_pending (account, folder))
-            return;
-        if (outbox_wants_camel ()) {
-            Utils.sync_log (
-                "Letter tip merge chain deferred “%s” — Outbox/send busy".printf (folder.name)
-            );
-            schedule_camel_align_yield_then_continue (
-                account,
-                folder,
-                had_before,
-                local,
-                incomplete
-            );
-            return;
-        }
-        if (!allow_deep_sync_under_rss (account, folder, null))
-            return;
-
-        enqueue_sync_job (
-            SYNC_KIND_HEADERS,
-            folder,
-            RANK_FORCE_FOLDER,
-            MailSession.REFRESH_INFO_FORCE_UNTIL_DONE,
-            true
-        );
-        if (!folder_skips_body_prefetch (folder))
-            enqueue_sync_job (SYNC_KIND_BODIES, folder, RANK_CACHE_ALIGN);
-        Utils.sync_log (
-            "Letter tip merge chain “%s” — next until-done slice (Archive-first, no yield)".printf (
-                folder.name
-            )
-        );
-        pump_sync.begin ();
-    }
 
     private void ensure_outbox_store () {
         var app = get_application () as Application;
@@ -1885,127 +1516,50 @@ public class Mail.Window : Adw.ApplicationWindow {
     }
 
     private void on_send_starting () {
-        /* Never cancel refresh_info — mid-cancel shreds Camel M365 summaries.
-         * Send waits for the slice budget; Outbox defers new FORCE resumes. */
-        if (this.camel_align_busy) {
+        this.send_in_progress = true;
+        /* A long header walk has already saved each finished Graph page.
+         * Cut it so the message can leave; the walk continues from that page.
+         * A short tip is left running — send waits a moment for it. */
+        if (this.camel_align_busy && this.camel_align_until_done
+            && !this.camel_align_user_force
+            && this.camel_align_cancellable != null
+            && !this.camel_align_cancellable.is_cancelled ()) {
+            this.sync_yielded_for_send = true;
             Utils.sync_log (
-                "send waiting — camel align “%s” (no mid-refresh cancel)".printf (
+                "send interrupts header sync “%s” — page checkpoint kept".printf (
                     this.camel_align_name ?? "?"
                 )
             );
-        } else {
-            preempt_background_sync ("send");
+            this.camel_align_cancellable.cancel ();
+        } else if (this.camel_align_busy) {
+            Utils.sync_log (
+                "send waiting — camel align “%s”".printf (
+                    this.camel_align_name ?? "?"
+                )
+            );
         }
         this.send_status_token = show_sync_status (_("Sending…"));
     }
 
     private void on_send_finished () {
+        var resume = this.sync_yielded_for_send;
+        this.sync_yielded_for_send = false;
+        this.send_in_progress = false;
         hide_sync_status (this.send_status_token);
         this.send_status_token = 0;
-        enqueue_cache_align ();
-        schedule_folder_scout (20);
-    }
-
-    /* After the folder tree is ready: Inbox first, then one quiet Graph tip
-     * for Archive/Sent to merge new UIDs into Letter (not Camel catch-up). */
-    private void enqueue_background_after_tree (GenericArray<string> added) {
-        Utils.sync_log (
-            "cache-first: tree ready (%u new folder names) — syncing inbox tree".printf (added.length)
-        );
-        enqueue_incoming_folder_sync (RANK_SELECTED_HEADERS);
-        watch_new_mail_folders.begin ();
-        enqueue_startup_bulk_graph_refresh ();
-        schedule_folder_scout (3);
-        /* Body window from Preferences — includes Archive/Sent once headers exist. */
-        Timeout.add_seconds (8, () => {
-            if (!this.tearing_down)
-                enqueue_cache_align ();
-            return Source.REMOVE;
-        });
-    }
-
-    /* After Inbox: finish Sent and Archive from the Camel delta cursor.
-     * UNTIL_DONE does not cancel refresh_info. The bundled evolution-ews
-     * patch commits the summary only when that walk completes, so a socket
-     * timeout resumes instead of shrinking the folder. */
-    private void enqueue_startup_bulk_graph_refresh () {
-        var account = this.selected_account;
-        if (account == null || this.mail_session == null)
+        if (this.tearing_down)
             return;
-        if (account.kind == AccountKind.LOCAL || !account.has_mail)
+        if (resume) {
+            if (this.mail_check_parked || this.mail_check_wanted)
+                flush_parked_mail_check ();
+            else
+                schedule_mail_check.begin (false);
             return;
-
-        var account_key = account.source_uid ?? account.uid;
-        if (this.startup_bulk_graph_done.contains (account_key))
-            return;
-
-        this.startup_bulk_graph_done.set (account_key, 1);
-
-        var queued = false;
-        var sent = find_folder_kind (FolderKind.SENT);
-        if (sent != null) {
-            set_deep_sync_pending (account, sent, true);
-            enqueue_sync_job (
-                SYNC_KIND_HEADERS,
-                sent,
-                RANK_IDLE_BULK,
-                MailSession.REFRESH_INFO_FORCE_UNTIL_DONE,
-                true
-            );
-            Utils.sync_log (
-                "startup align queued for “%s” (until-done)".printf (sent.name)
-            );
-            queued = true;
         }
-
-        var archive = find_folder_kind (FolderKind.ARCHIVE);
-        if (archive == null)
-            archive = find_folder_kind (FolderKind.ALL);
-        if (archive != null) {
-            set_deep_sync_pending (account, archive, true);
-            enqueue_sync_job (
-                SYNC_KIND_HEADERS,
-                archive,
-                RANK_IDLE_BULK,
-                MailSession.REFRESH_INFO_FORCE_UNTIL_DONE,
-                true
-            );
-            Utils.sync_log (
-                "startup align queued for “%s” (until-done)".printf (archive.name)
-            );
-            queued = true;
-        }
-
-        if (queued)
-            pump_sync.begin ();
+        if (this.mail_check_parked || this.mail_check_wanted)
+            flush_parked_mail_check ();
     }
 
-    /* After headers are current, keep downloading bodies in the tip window. */
-    private void enqueue_body_prefetch_after_headers (Folder folder, bool current) {
-        if (folder_skips_body_prefetch (folder))
-            return;
-        var account = this.selected_account;
-        if (account == null)
-            return;
-        /* Only prefetch bodies for the open folder — Archive Update Folder must
-         * not pull thousands of MIME into Camel while another folder is selected. */
-        if (!current)
-            return;
-        var listed = this.message_cache.get (message_cache_key (account, folder));
-        if (listed == null || listed.length == 0)
-            return;
-        ensure_body_prefetch_extent (account, folder);
-        /* Selected folder fills its preference window before parked background
-         * downloads. Send / new-mail stay ahead via a lower rank. */
-        enqueue_sync_job (SYNC_KIND_BODIES, folder, RANK_SELECTED_BODIES);
-        pump_sync.begin ();
-    }
-
-    private void ensure_body_prefetch_extent (Account account, Folder folder) {
-        var key = message_cache_key (account, folder);
-        if (!this.body_prefetch_extent.contains (key))
-            this.body_prefetch_extent.set (key, (int) MailSession.BODY_PREFETCH_TIP);
-    }
 
     /* Preference window, not the 1500 tip. Newest-first: the index of the
      * first message older than body-cache-days, or the whole list when the
@@ -2029,846 +1583,6 @@ public class Mail.Window : Adw.ApplicationWindow {
         return (int) listed.length;
     }
 
-    private void on_message_list_edge_reached (Gtk.PositionType pos) {
-        if (pos != Gtk.PositionType.BOTTOM)
-            return;
-        if (this.body_prefetch_scroll_source != 0)
-            return;
-        this.body_prefetch_scroll_source = Timeout.add (200, () => {
-            this.body_prefetch_scroll_source = 0;
-            extend_body_prefetch_for_scroll ();
-            return Source.REMOVE;
-        });
-    }
-
-    private void extend_body_prefetch_for_scroll () {
-        var account = this.selected_account;
-        var folder = this.selected_folder;
-        if (account == null || folder == null || folder.is_virtual_view)
-            return;
-        if (folder_skips_body_prefetch (folder))
-            return;
-        if (this.search_text.length > 0)
-            return;
-        var listed = this.message_cache.get (message_cache_key (account, folder));
-        if (listed == null || listed.length == 0)
-            return;
-        var key = message_cache_key (account, folder);
-        ensure_body_prefetch_extent (account, folder);
-        var cur = this.body_prefetch_extent.get (key);
-        if (cur >= (int) listed.length)
-            return;
-        var next = int.min (
-            cur + (int) MailSession.BODY_PREFETCH_SCROLL_STEP,
-            (int) listed.length
-        );
-        this.body_prefetch_extent.set (key, next);
-        Utils.sync_log (
-            "body prefetch window “%s” → %d/%u (scroll)".printf (
-                folder.name,
-                next,
-                listed.length
-            )
-        );
-        enqueue_body_prefetch_after_headers (folder, true);
-    }
-
-    /* Debounced background scout: empty header lists with mail on the server,
-     * or warm lists whose remote totals/unread drifted (other clients). */
-    private void schedule_folder_scout (uint delay_seconds = 5) {
-        if (this.tearing_down || this.selected_account == null)
-            return;
-        if (this.folder_scout_source != 0)
-            Source.remove (this.folder_scout_source);
-        this.folder_scout_source = Timeout.add_seconds (delay_seconds.clamp (1, 60), () => {
-            this.folder_scout_source = 0;
-            run_folder_scout.begin ();
-            return Source.REMOVE;
-        });
-    }
-
-    private void stop_folder_scout () {
-        if (this.folder_scout_source != 0) {
-            Source.remove (this.folder_scout_source);
-            this.folder_scout_source = 0;
-        }
-    }
-
-    private bool folder_wants_count_scout (Folder folder) {
-        if (folder.is_virtual_view || folder.is_gmail_namespace)
-            return false;
-        if (folder_is_incoming_watch (folder))
-            return false;
-        /* While Archive/move flush is pending, skip Trash/Junk scout — those
-         * probes flood the log and contend for Camel with Graph moves. */
-        if (this.mail_session != null && this.mail_session.pending_transfer_jobs > 0
-            && (folder.kind == FolderKind.TRASH || folder.kind == FolderKind.JUNK))
-            return false;
-        return true;
-    }
-
-    private void local_header_stats (Account account, Folder folder, out uint total, out uint unread) {
-        total = 0;
-        unread = 0;
-        var key = message_cache_key (account, folder);
-        var cached = this.message_cache.get (key);
-        if (cached == null || cached.length == 0) {
-            var disk = load_header_list_cache (account, folder);
-            if (disk != null && disk.length > 0) {
-                this.message_cache.set (key, disk);
-                touch_message_cache_key (key);
-                cached = disk;
-            }
-        }
-        if (cached == null)
-            return;
-        total = cached.length;
-        for (uint i = 0; i < cached.length; i++) {
-            if (!cached[i].seen)
-                unread++;
-        }
-    }
-
-    private async void run_folder_scout () {
-        if (this.folder_scout_running || this.tearing_down || this.mailbox_bootstrapping)
-            return;
-        var account = this.selected_account;
-        if (this.mail_session == null || account == null || account.kind == AccountKind.LOCAL || !account.has_mail)
-            return;
-
-        this.folder_scout_running = true;
-        try {
-            var folders = mailbox_sync_folders ();
-            var list = new GenericArray<Folder> ();
-            for (uint i = 0; i < folders.length; i++) {
-                if (folder_wants_count_scout (folders[i]))
-                    list.add (folders[i]);
-            }
-            list.sort ((a, b) => {
-                int rank = idle_bulk_sort_rank (a) - idle_bulk_sort_rank (b);
-                if (rank != 0)
-                    return rank;
-                return a.name.collate (b.name);
-            });
-
-            if (list.length == 0) {
-                Utils.sync_log ("folder scout: nothing to align");
-                enqueue_cache_align ();
-                return;
-            }
-
-            if (compose_windows_open ()) {
-                /* Keep filling bodies while the user writes; only skip header probes. */
-                Utils.sync_log ("folder scout: header probe paused (compose open)");
-                enqueue_cache_align ();
-                schedule_folder_scout (30);
-                return;
-            }
-
-            Utils.sync_log ("folder scout: checking %u non-inbox folders".printf (list.length));
-
-            /* Rotate so Sent's tiny ±few drift cannot starve Archive forever. */
-            var start = this.folder_scout_cursor % list.length;
-            this.folder_scout_cursor = start + 1;
-
-            Folder? pick = null;
-            int pick_deficit = 0;
-            string pick_why = "";
-            bool pick_cold = false;
-            int pick_remote_total = -1;
-            uint pick_local_total = 0;
-
-            for (uint n = 0; n < list.length; n++) {
-                if (this.tearing_down || !is_current_account (account))
-                    break;
-                if (compose_windows_open ())
-                    break;
-
-                var folder = list[(start + n) % list.length];
-                uint local_total = 0;
-                uint local_unread = 0;
-                local_header_stats (account, folder, out local_total, out local_unread);
-                int remote_total = -1;
-                int remote_unread = -1;
-
-                try {
-                    /* Fast path: Letter header list behind Camel's local summary. */
-                    var camel_n = yield this.mail_session.local_uid_count (
-                        account,
-                        folder,
-                        this.idle_cancellable
-                    );
-                    var camel_gap = scout_total_gap (camel_n, local_total);
-                    if (camel_n > 0)
-                        note_header_high_water (account, folder, (uint) camel_n);
-                    /* Telemetry only when counts diverge — Camel UID count is
-                     * local summary, not Graph. */
-                    if (camel_n != (int) local_total
-                        && (folder_skips_scout_count_chase (folder)
-                            || folder_is_bulk_storage (folder)
-                            || camel_gap >= LARGE_HEADER_GAP)) {
-                        Utils.sync_log (
-                            "Camel vs Letter “%s” summary_uids=%d letter_headers=%u (local Camel, not Graph)".printf (
-                                folder.name,
-                                camel_n,
-                                local_total
-                            )
-                        );
-                    }
-                    if (camel_gap > pick_deficit && folder_idle_align_safe (folder)) {
-                        folder.total = int.max (folder.total, camel_n);
-                        pick = folder;
-                        pick_deficit = camel_gap;
-                        pick_why = "Camel summary ahead (%d vs %u)".printf (camel_n, local_total);
-                        pick_cold = local_total == 0;
-                        pick_remote_total = -1;
-                        pick_local_total = local_total;
-                    }
-
-                    /* Recover from tip-wave / incomplete-refresh shrinks. */
-                    var water_gap = folder_known_header_gap (account, folder, local_total);
-                    if (water_gap > pick_deficit && folder_idle_align_safe (folder)) {
-                        pick = folder;
-                        pick_deficit = water_gap;
-                        pick_why = "below watermark (%u vs high-water %u)".printf (
-                            local_total,
-                            header_high_water (account, folder)
-                        );
-                        pick_cold = local_total == 0;
-                        pick_remote_total = -1;
-                        pick_local_total = local_total;
-                    }
-
-                    if (folder_deep_sync_pending (account, folder)
-                        && int.max (water_gap, camel_gap) >= pick_deficit
-                        && folder_idle_align_safe (folder)) {
-                        pick = folder;
-                        pick_deficit = int.max (int.max (water_gap, camel_gap), LARGE_HEADER_GAP);
-                        pick_why = "deep sync pending";
-                        pick_cold = local_total == 0;
-                        pick_remote_total = -1;
-                        pick_local_total = local_total;
-                    }
-                } catch (Error e) {
-                    if (e is IOError.CANCELLED)
-                        break;
-                    Utils.sync_log ("folder scout “%s” camel count skipped: %s".printf (
-                        folder.name,
-                        e.message
-                    ));
-                }
-
-                try {
-                    if (local_total == 0) {
-                        var differs = yield this.mail_session.remote_counts_differ_full (
-                            account,
-                            folder,
-                            0,
-                            0,
-                            this.idle_cancellable,
-                            out remote_total,
-                            out remote_unread
-                        );
-                        var needs = differs || folder.total > 0 || folder.unread > 0;
-                        var gap = scout_total_gap (
-                            remote_total >= 0 ? remote_total : folder.total,
-                            0
-                        );
-                        if (needs && gap > pick_deficit && folder_idle_align_safe (folder)) {
-                            pick = folder;
-                            pick_deficit = int.max (gap, 1);
-                            pick_why = "cold (remote total %d unread %d)".printf (
-                                remote_total >= 0 ? remote_total : folder.total,
-                                remote_unread >= 0 ? remote_unread : folder.unread
-                            );
-                            pick_cold = true;
-                            pick_remote_total = remote_total;
-                            pick_local_total = local_total;
-                        }
-                    } else {
-                        var before_total = folder.total;
-                        var differs = yield this.mail_session.remote_counts_differ_full (
-                            account,
-                            folder,
-                            (int) local_total,
-                            (int) local_unread,
-                            this.idle_cancellable,
-                            out remote_total,
-                            out remote_unread
-                        );
-                        if (remote_total >= 0
-                            && remote_gap_wants_force (local_total, remote_total)
-                            && folder_idle_align_safe (folder)) {
-                            var force_gap = scout_total_gap (remote_total, local_total);
-                            if (force_gap > pick_deficit) {
-                                pick = folder;
-                                pick_deficit = force_gap;
-                                pick_why = "Letter short vs Graph (%u vs %d)".printf (
-                                    local_total,
-                                    remote_total
-                                );
-                                pick_cold = false;
-                                pick_remote_total = remote_total;
-                                pick_local_total = local_total;
-                            }
-                        } else if (differs) {
-                            var gap = scout_total_gap (folder.total, local_total);
-                            var unread_gap = (folder.unread - (int) local_unread).abs ();
-                            var score = int.max (gap, unread_gap);
-                            if (score == 0)
-                                score = 1;
-                            if (score > pick_deficit && folder_idle_align_safe (folder)) {
-                                pick = folder;
-                                pick_deficit = score;
-                                pick_why = "counts drifted (local %u/%u, was tree %d)".printf (
-                                    local_unread,
-                                    local_total,
-                                    before_total
-                                );
-                                pick_cold = false;
-                                pick_remote_total = remote_total;
-                                pick_local_total = local_total;
-                            }
-                        }
-                    }
-                } catch (Error e) {
-                    if (e is IOError.CANCELLED)
-                        break;
-                    Utils.sync_log ("folder scout “%s” skipped: %s".printf (folder.name, e.message));
-                }
-
-                Timeout.add (40, run_folder_scout.callback);
-                yield;
-            }
-
-            /* Tip wave: oldest-due tip folders first, shared time budget.
-             * Leftover seconds after a quick folder go to the next (Sent /
-             * Drafts only — never Archive/ALL tip Graph). */
-            var tip_done = yield run_tip_refresh_wave (account, list);
-
-            uint queued = 0;
-            if (pick != null && !auto_force_slot_busy ()) {
-                uint local_for_force = pick_local_total;
-                uint local_unread_for_force = 0;
-                if (local_for_force == 0)
-                    local_header_stats (account, pick, out local_for_force, out local_unread_for_force);
-                var remote_for_force = pick_remote_total;
-                /* Camel FolderInfo.total is local summary (saved-count), not Graph.
-                 * Do not auto Update Folder from it until a real Graph GET exists. */
-                if (SCOUT_AUTO_FORCE_FROM_CAMEL_COUNTS
-                    && remote_gap_wants_force (local_for_force, remote_for_force)
-                    && pick_remote_total >= 0
-                    && !auto_force_on_cooldown (account, pick)) {
-                    var gap = remote_for_force - (int) local_for_force;
-                    var pct = local_for_force > 0
-                        ? (100.0 * gap) / local_for_force
-                        : 100.0;
-                    Utils.sync_log (
-                        "folder scout auto Update Folder “%s” (Letter %u, remote %d, gap %.0f%%)".printf (
-                            pick.name,
-                            local_for_force,
-                            remote_for_force,
-                            pct
-                        )
-                    );
-                    update_folder_from_server (pick);
-                    queued++;
-                    schedule_folder_scout (15);
-                } else {
-                    if (pick_remote_total >= 0
-                        && remote_gap_wants_force (local_for_force, remote_for_force)
-                        && !SCOUT_AUTO_FORCE_FROM_CAMEL_COUNTS) {
-                        Utils.sync_log (
-                            "folder scout skip auto Update Folder “%s” (Camel FolderInfo untrusted local-summary, Letter %u vs count %d)".printf (
-                                pick.name,
-                                local_for_force,
-                                remote_for_force
-                            )
-                        );
-                    }
-                    uint timeout = 0;
-                    if (!scout_schedule_refresh (account, pick, pick_cold, pick_why, out timeout)) {
-                        refresh_folder_badge (pick);
-                        if (folder_skips_scout_count_chase (pick)) {
-                            Utils.sync_log (
-                                "folder scout skip Graph “%s” (count chase, %s, deficit≈%d)".printf (
-                                    pick.name,
-                                    pick_why,
-                                    pick_deficit
-                                )
-                            );
-                        } else {
-                            Utils.sync_log ("folder scout defer “%s” (backoff, deficit≈%d)".printf (
-                                pick.name,
-                                pick_deficit
-                            ));
-                        }
-                    } else if (SCOUT_AUTO_FORCE_FROM_CAMEL_COUNTS
-                        && pick_remote_total >= 0
-                        && remote_gap_wants_force (local_for_force, remote_for_force)) {
-                        refresh_folder_badge (pick);
-                        if (auto_force_on_cooldown (account, pick)) {
-                            Utils.sync_log (
-                                "folder scout skip auto Update Folder “%s” (24h cooldown, Letter %u remote %d)".printf (
-                                    pick.name,
-                                    local_for_force,
-                                    remote_for_force
-                                )
-                            );
-                        } else {
-                            Utils.sync_log (
-                                "folder scout defer auto Update Folder “%s” (cooldown clear but slot race)".printf (
-                                    pick.name
-                                )
-                            );
-                        }
-                    } else {
-                        var force_graph = MailSession.is_force_refresh_timeout (timeout)
-                            || folder_deep_sync_pending (account, pick)
-                            || pick_deficit >= LARGE_HEADER_GAP;
-                        enqueue_sync_job (
-                            SYNC_KIND_HEADERS,
-                            pick,
-                            RANK_IDLE_BULK,
-                            timeout,
-                            force_graph
-                        );
-                        refresh_folder_badge (pick);
-                        if (folder_wants_tip_refresh (pick))
-                            mark_tip_refresh (account, pick);
-                        queued++;
-                        Utils.sync_log ("folder scout %s: “%s” %s (deficit≈%d budget=%s)".printf (
-                            pick_cold ? "cold" : "warm",
-                            pick.name,
-                            pick_why,
-                            pick_deficit,
-                            timeout == MailSession.REFRESH_INFO_SKIP
-                                ? "camel-only"
-                                : "%us".printf (timeout)
-                        ));
-                    }
-                }
-            } else if (pick != null && auto_force_slot_busy ()) {
-                Utils.sync_log (
-                    "folder scout defer “%s” — Update Folder / deep slice already running".printf (
-                        pick.name
-                    )
-                );
-                schedule_folder_scout (15);
-            }
-
-            if (queued > 0) {
-                Utils.sync_log ("folder scout: queued %u align (tip wave %u)".printf (queued, tip_done));
-                pump_sync.begin ();
-                schedule_folder_scout (15);
-            } else if (tip_done > 0) {
-                Utils.sync_log ("folder scout: tip wave done (%u), nothing else to align".printf (tip_done));
-                schedule_folder_scout (15);
-            } else {
-                Utils.sync_log ("folder scout: nothing to align");
-                enqueue_pending_deep_syncs ();
-                enqueue_cache_align ();
-            }
-        } finally {
-            this.folder_scout_running = false;
-        }
-    }
-
-    private static int scout_total_gap (int expected_total, uint local_count) {
-        if (expected_total <= 0)
-            return 0;
-        if (local_count >= (uint) expected_total)
-            return 0;
-        return expected_total - (int) local_count;
-    }
-
-    private bool compose_windows_open () {
-        var app = get_application ();
-        if (app == null)
-            return false;
-        foreach (var window in app.get_windows ()) {
-            var compose = window as ComposeWindow;
-            if (compose != null && compose.visible)
-                return true;
-        }
-        return false;
-    }
-
-    private bool folder_wants_idle_align (Folder folder) {
-        if (folder.is_virtual_view || folder.is_gmail_namespace)
-            return false;
-        if (folder_is_incoming_watch (folder))
-            return false;
-        return true;
-    }
-
-    private bool folder_idle_align_safe (Folder folder) {
-        if (!folder_wants_idle_align (folder))
-            return false;
-        /* Cold bulk folders still freeze on first collect_messages. Idle-align
-         * them only with an existing header cache (RAM/disk → delta), or if small. */
-        if (folder_is_bulk_storage (folder)) {
-            var account = this.selected_account;
-            if (account == null)
-                return false;
-            var key = message_cache_key (account, folder);
-            var cached = this.message_cache.get (key);
-            if (cached == null || cached.length == 0) {
-                var disk = load_header_list_cache (account, folder);
-                if (disk != null && disk.length > 0) {
-                    this.message_cache.set (key, disk);
-                    cached = disk;
-                    Utils.sync_log ("idle bulk: primed “%s” from disk cache (%u)".printf (
-                        folder.name,
-                        disk.length
-                    ));
-                }
-            }
-            if ((cached == null || cached.length == 0) && folder.total > 1500)
-                return false;
-        }
-        return true;
-    }
-
-    /* After a brief attempt that did not close the gap — escalate sooner. */
-    private const int64 BULK_REFRESH_BACKOFF_ESCALATE = 2 * 60 * TimeSpan.SECOND;
-    /* After FULL budget still drifting — stop hammering Graph. */
-    private const int64 BULK_REFRESH_BACKOFF_EXHAUSTED = 45 * 60 * TimeSpan.SECOND;
-
-    private bool scout_schedule_refresh (
-        Account account,
-        Folder folder,
-        bool cold,
-        string why,
-        out uint timeout_seconds
-    ) {
-        timeout_seconds = 0;
-
-        /* Letter headers behind Camel local summary — no Graph needed. */
-        if (why.has_prefix ("Camel summary ahead")) {
-            timeout_seconds = MailSession.REFRESH_INFO_SKIP;
-            return true;
-        }
-
-        uint local_total = 0;
-        uint local_unread = 0;
-        local_header_stats (account, folder, out local_total, out local_unread);
-        var known_gap = folder_known_header_gap (account, folder, local_total);
-        var deep = folder_deep_sync_pending (account, folder);
-
-        /* Archive / Sent / ALL: never auto-Graph from scout. Online Archive
-         * count noise is endless; short/full refreshes also reset Camel mid-
-         * delta. Deep align is startup-once / Update Folder / yield-continue. */
-        if (folder_skips_scout_count_chase (folder))
-            return false;
-
-        /* Small / incoming-adjacent folders: normal default budget. */
-        if (!folder_is_bulk_storage (folder)
-            && folder.total <= 1500 && !cold) {
-            timeout_seconds = MailSession.REFRESH_INFO_NORMAL;
-            return true;
-        }
-
-        var key = message_cache_key (account, folder);
-        var now = Utils.sync_tick ();
-        var until = this.bulk_refresh_next_allowed.get (key);
-        if (until != null && now < until && known_gap < LARGE_HEADER_GAP && !deep)
-            return false;
-
-        if (cold || deep || known_gap >= LARGE_HEADER_GAP) {
-            timeout_seconds = deep
-                ? MailSession.REFRESH_INFO_FORCE
-                : MailSession.REFRESH_INFO_FULL;
-            return true;
-        }
-
-        var level = 0;
-        if (this.bulk_refresh_level.contains (key))
-            level = this.bulk_refresh_level.get (key);
-        switch (level) {
-            case 0:
-                timeout_seconds = MailSession.REFRESH_INFO_BRIEF;
-                break;
-            case 1:
-                timeout_seconds = MailSession.REFRESH_INFO_NORMAL;
-                break;
-            default:
-                timeout_seconds = MailSession.REFRESH_INFO_FULL;
-                break;
-        }
-        return true;
-    }
-
-    private async void note_scout_align_result (Account account, Folder folder, uint used_timeout) {
-        if (used_timeout == MailSession.REFRESH_INFO_SKIP)
-            return;
-        if (!folder_is_bulk_storage (folder)
-            && folder.total <= 1500)
-            return;
-
-        var key = message_cache_key (account, folder);
-        var now = Utils.sync_tick ();
-        uint local_total = 0;
-        uint local_unread = 0;
-        local_header_stats (account, folder, out local_total, out local_unread);
-
-        var still = false;
-        if (this.mail_session.last_list_refresh_incomplete) {
-            /* Budget ended mid-Graph — remote totals often already match the
-             * partial Camel summary (Online Archive). That is not "settled". */
-            still = true;
-            Utils.sync_log (
-                "bulk refresh “%s” incomplete budget — keep aligning".printf (folder.name)
-            );
-        } else {
-            try {
-                still = yield this.mail_session.remote_counts_differ (
-                    account,
-                    folder,
-                    (int) local_total,
-                    (int) local_unread,
-                    null
-                );
-            } catch (Error e) {
-                Utils.sync_log ("bulk refresh result check “%s”: %s".printf (folder.name, e.message));
-                still = true;
-            }
-        }
-
-        if (!still) {
-            /* Ready for the next sync-cycle scout — no multi-minute lockout. */
-            this.bulk_refresh_level.remove (key);
-            this.bulk_refresh_next_allowed.remove (key);
-            Utils.sync_log ("bulk refresh “%s” settled".printf (folder.name));
-            return;
-        }
-
-        var level = 0;
-        if (this.bulk_refresh_level.contains (key))
-            level = this.bulk_refresh_level.get (key);
-        if (level < 2) {
-            this.bulk_refresh_level.set (key, level + 1);
-            this.bulk_refresh_next_allowed.set (key, now + BULK_REFRESH_BACKOFF_ESCALATE);
-            Utils.sync_log ("bulk refresh “%s” still drifting — escalate to level %d in 2m".printf (
-                folder.name,
-                level + 1
-            ));
-        } else {
-            this.bulk_refresh_next_allowed.set (key, now + BULK_REFRESH_BACKOFF_EXHAUSTED);
-            Utils.sync_log ("bulk refresh “%s” still drifting after full budget — pause 45m".printf (
-                folder.name
-            ));
-        }
-    }
-
-    private void clear_bulk_refresh_backoff (Account account, Folder folder) {
-        var key = message_cache_key (account, folder);
-        this.bulk_refresh_next_allowed.remove (key);
-        this.bulk_refresh_level.remove (key);
-    }
-
-    private void clear_all_bulk_refresh_backoff () {
-        this.bulk_refresh_next_allowed.remove_all ();
-        this.bulk_refresh_level.remove_all ();
-        this.tip_refresh_last.remove_all ();
-        this.deep_sync_pending.remove_all ();
-    }
-
-    /* Sent / Drafts only. Archive/ALL must never get a short tip refresh_info:
-     * cancelling Graph mid-delta shreds the Camel summary (ews M365). New
-     * Archive mail waits for Update Folder / rare deep align — Evolution-like. */
-    private static bool folder_wants_tip_refresh (Folder folder) {
-        return folder.kind == FolderKind.SENT
-            || folder.kind == FolderKind.DRAFTS;
-    }
-
-    /* Shared wall-clock budget for one scout tip wave (oldest-due first). */
-    private const uint TIP_WAVE_BUDGET_SECONDS = 15;
-    /* Do not start another tip folder with less than this left. */
-    private const uint TIP_WAVE_MIN_SLICE_SECONDS = 3;
-    private const int64 TIP_REFRESH_INTERVAL = 5 * 60 * TimeSpan.SECOND;
-
-    private bool tip_refresh_due (Account account, Folder folder) {
-        var last = this.tip_refresh_last.get (message_cache_key (account, folder));
-        if (last == null)
-            return true;
-        return (Utils.sync_tick () - last) >= TIP_REFRESH_INTERVAL;
-    }
-
-    private int64 tip_refresh_age (Account account, Folder folder) {
-        var last = this.tip_refresh_last.get (message_cache_key (account, folder));
-        if (last == null)
-            return int64.MAX;
-        return Utils.sync_tick () - last;
-    }
-
-    private void mark_tip_refresh (Account account, Folder folder) {
-        this.tip_refresh_last.set (message_cache_key (account, folder), Utils.sync_tick ());
-    }
-
-    /* Run tip refreshes inline so unused seconds pass to the next oldest-due
-     * folder within one wave (enqueue cannot reallocate leftover time). */
-    private async uint run_tip_refresh_wave (Account account, GenericArray<Folder> scout_list) {
-        if (this.camel_align_busy)
-            return 0;
-        var tips = new GenericArray<Folder> ();
-        for (uint n = 0; n < scout_list.length; n++) {
-            var folder = scout_list[n];
-            if (!folder_wants_tip_refresh (folder))
-                continue;
-            if (!folder_idle_align_safe (folder))
-                continue;
-            /* Deep sync / large watermark gaps need full waves — tip fights them. */
-            if (folder_deep_sync_pending (account, folder))
-                continue;
-            uint local_total = 0;
-            uint local_unread = 0;
-            local_header_stats (account, folder, out local_total, out local_unread);
-            if (folder_known_header_gap (account, folder, local_total) >= LARGE_HEADER_GAP)
-                continue;
-            if (!tip_refresh_due (account, folder))
-                continue;
-            tips.add (folder);
-        }
-        if (tips.length == 0)
-            return 0;
-
-        /* Oldest tip age first (never tipped ⇒ treated as oldest). */
-        for (uint i = 0; i + 1 < tips.length; i++) {
-            for (uint j = i + 1; j < tips.length; j++) {
-                var age_i = tip_refresh_age (account, tips[i]);
-                var age_j = tip_refresh_age (account, tips[j]);
-                if (age_j > age_i
-                    || (age_j == age_i && tips[j].name.collate (tips[i].name) < 0)) {
-                    var swap = tips[i];
-                    tips[i] = tips[j];
-                    tips[j] = swap;
-                }
-            }
-        }
-
-        if (this.idle_cancellable == null || this.idle_cancellable.is_cancelled ())
-            this.idle_cancellable = new Cancellable ();
-        var cancellable = this.idle_cancellable;
-
-        uint remaining_ms = TIP_WAVE_BUDGET_SECONDS * 1000;
-        uint done = 0;
-        Utils.sync_log ("folder scout tip wave: %u due, budget=%us".printf (
-            tips.length,
-            TIP_WAVE_BUDGET_SECONDS
-        ));
-
-        for (uint i = 0; i < tips.length; i++) {
-            var slice_s = (remaining_ms + 999) / 1000;
-            if (slice_s < TIP_WAVE_MIN_SLICE_SECONDS)
-                break;
-            if (this.tearing_down || !is_current_account (account))
-                break;
-            if (compose_windows_open () || cancellable.is_cancelled ())
-                break;
-
-            var folder = tips[i];
-            var t0 = Utils.sync_tick ();
-            Utils.sync_log ("folder scout tip: “%s” slice≤%us (%ums left in wave)".printf (
-                folder.name,
-                slice_s,
-                remaining_ms
-            ));
-            yield align_folder_with_server (account, folder, cancellable, false, slice_s);
-            mark_tip_refresh (account, folder);
-            done++;
-
-            var used_ms = (uint) ((Utils.sync_tick () - t0) / 1000);
-            if (used_ms >= remaining_ms)
-                remaining_ms = 0;
-            else
-                remaining_ms -= used_ms;
-
-            Timeout.add (40, run_tip_refresh_wave.callback);
-            yield;
-        }
-
-        if (done > 0) {
-            Utils.sync_log ("folder scout tip wave finished: %u folder(s), %ums unused".printf (
-                done,
-                remaining_ms
-            ));
-        }
-        return done;
-    }
-
-    private static int idle_bulk_sort_rank (Folder folder) {
-        switch (folder.kind) {
-            case FolderKind.SENT:
-                return 0;
-            case FolderKind.DRAFTS:
-                return 1;
-            case FolderKind.OUTBOX:
-                return 2;
-            case FolderKind.TRASH:
-                return 3;
-            case FolderKind.JUNK:
-                return 4;
-            case FolderKind.ARCHIVE:
-            case FolderKind.ALL:
-                return 5;
-            default:
-                return 6;
-        }
-    }
-
-    private void enqueue_cache_align () {
-        var folders = mailbox_sync_folders ();
-        var list = new GenericArray<Folder> ();
-        for (uint i = 0; i < folders.length; i++) {
-            var folder = folders[i];
-            if (folder.is_virtual_view || folder.is_gmail_namespace)
-                continue;
-            if (folder_skips_body_prefetch (folder))
-                continue;
-            list.add (folder);
-        }
-        /* Stable order: Inbox tree first, then Sent, Archive, … so status
-         * does not bounce between unrelated folders mid-fill. */
-        list.sort ((a, b) => {
-            int rank = body_fill_sort_rank (a) - body_fill_sort_rank (b);
-            if (rank != 0)
-                return rank;
-            return a.full_name.collate (b.full_name);
-        });
-        for (uint i = 0; i < list.length; i++)
-            enqueue_sync_job (SYNC_KIND_CACHE_ALIGN, list[i], RANK_CACHE_ALIGN + (int) i);
-        pump_sync.begin ();
-    }
-
-    private static int body_fill_sort_rank (Folder folder) {
-        if (folder_is_incoming_watch (folder))
-            return 0;
-        switch (folder.kind) {
-            case FolderKind.SENT:
-                return 1;
-            case FolderKind.DRAFTS:
-                return 2;
-            case FolderKind.OUTBOX:
-                return 3;
-            case FolderKind.ARCHIVE:
-            case FolderKind.ALL:
-                return 4;
-            case FolderKind.TRASH:
-                return 5;
-            case FolderKind.JUNK:
-                return 6;
-            default:
-                return 7;
-        }
-    }
-
-    private void finish_startup_tree (GenericArray<string> added) {
-        if (!this.continue_startup_after_tree)
-            return;
-        this.continue_startup_after_tree = false;
-        enqueue_background_after_tree (added);
-    }
 
     private GenericArray<Folder> reuse_sidebar_folders (
         GenericArray<Folder> incoming,
@@ -2901,383 +1615,6 @@ public class Mail.Window : Adw.ApplicationWindow {
         return resolved;
     }
 
-    private MailSyncJob? take_best_sync_job () {
-        if (this.sync_jobs.length == 0)
-            return null;
-
-        uint best = 0;
-        for (uint i = 1; i < this.sync_jobs.length; i++) {
-            if (this.sync_jobs[i].rank < this.sync_jobs[best].rank)
-                best = i;
-        }
-
-        /* Finish one folder's body window before hopping to another. Priority
-         * work (Inbox / send / open) still wins via lower rank. */
-        if (this.sync_jobs[best].rank >= RANK_CACHE && this.body_fill_folder != null) {
-            for (uint i = 0; i < this.sync_jobs.length; i++) {
-                var candidate = this.sync_jobs[i];
-                if (candidate.kind != SYNC_KIND_BODIES && candidate.kind != SYNC_KIND_CACHE_ALIGN)
-                    continue;
-                if (candidate.folder == null || candidate.folder.full_name != this.body_fill_folder)
-                    continue;
-                if (candidate.rank > this.sync_jobs[best].rank)
-                    continue;
-                best = i;
-                break;
-            }
-        }
-
-        var job = this.sync_jobs[best];
-        this.sync_jobs.remove_index (best);
-        return job;
-    }
-
-    private async void run_sync_job (Account account, MailSyncJob job, Cancellable cancellable) {
-        if (job.kind == SYNC_KIND_TREE) {
-            if (this.mail_session == null)
-                return;
-            var token = show_sync_status (_("Checking folders…"));
-            try {
-                var folders = yield this.mail_session.list_folders (account, null, true);
-                if (!is_current_account (account))
-                    return;
-                var added = new GenericArray<string> ();
-                /* Opening Inbox can preempt/cancel this job mid-flight. Still
-                 * finish startup so Inbox sync is not skipped until F5. */
-                if (folders.length > 0 && !cancellable.is_cancelled ()) {
-                    var resolved = reuse_sidebar_folders (folders, added);
-                    Utils.sync_log ("folder tree compare: %s (%u added)".printf (
-                        added.length == 0 ? "unchanged" : "diff",
-                        added.length
-                    ));
-                    apply_folder_tree (resolved);
-                    remember_folder_tree (account, resolved);
-                    mark_inbox_tree_on_sidebar ();
-                    this.last_full_align = Utils.sync_tick ();
-                } else if (cancellable.is_cancelled ()) {
-                    Utils.sync_log ("folder tree refresh preempted — continuing startup sync");
-                }
-                finish_startup_tree (added);
-            } catch (Error e) {
-                if (!(e is IOError.CANCELLED))
-                    debug ("Folder tree refresh: %s", e.message);
-                else
-                    Utils.sync_log ("folder tree refresh cancelled — continuing startup sync");
-                if (is_current_account (account))
-                    finish_startup_tree (new GenericArray<string> ());
-            } finally {
-                hide_sync_status (token);
-            }
-            return;
-        }
-
-        var folder = sync_job_folder (job);
-        if (folder == null)
-            return;
-
-        if (job.kind == SYNC_KIND_HEADERS) {
-            if (job.open_folder_fill && !is_current_folder (folder)) {
-                Utils.sync_log ("folder open sync skip “%s” — selection moved".printf (folder.name));
-                return;
-            }
-            if (this.mail_session.folder_has_pending_flags (account, folder)) {
-                /* pump_sync defers these with a delay; keep as safety net. */
-                requeue_sync_job (job);
-                return;
-            }
-            var current = is_current_folder (folder);
-            var is_force = job_is_force_folder_refresh (job);
-            var is_slice = job_is_camel_align_slice (job);
-            var deepish = !is_force && (job_is_deep_sync_continue (job)
-                || folder_deep_sync_pending (account, folder));
-            /* Pass null job — never requeue into the pump here. Parking uses
-             * deep_sync_pending + the RSS defer timer (see allow_deep_sync). */
-            if (deepish && !allow_deep_sync_under_rss (account, folder, null))
-                return;
-            if (current || is_force)
-                this.conversation_sync_spinner.visible = current || is_force;
-            /* Idle scout / startup-once Archive stay quiet. Update Folder always
-             * shows status. Background deep-sync must not blank the message list. */
-            var show_status = is_force || (current && job.rank < RANK_IDLE_BULK);
-            uint token = 0;
-            if (show_status) {
-                token = show_sync_status (
-                    is_force
-                        ? _("Updating “%s” from server…").printf (folder.name)
-                        : _("Updating “%s”…").printf (folder.name)
-                );
-            }
-            var high = current || is_force
-                || (job.force_graph_refresh && job.rank < RANK_IDLE_BULK);
-            var refresh_timeout = job.refresh_timeout_seconds;
-            if (job.force_graph_refresh
-                && refresh_timeout == MailSession.REFRESH_INFO_SKIP)
-                refresh_timeout = 0;
-
-            Cancellable align_cancel = cancellable;
-            var slice_started = false;
-            if (is_slice) {
-                if (!begin_camel_align_slice (folder, is_force, job.open_folder_fill)) {
-                    enqueue_sync_job (
-                        SYNC_KIND_HEADERS,
-                        folder,
-                        job.rank,
-                        job.refresh_timeout_seconds,
-                        job.force_graph_refresh
-                    );
-                    if (show_status)
-                        hide_sync_status (token);
-                    if (current)
-                        this.conversation_sync_spinner.visible = false;
-                    return;
-                }
-                slice_started = true;
-                align_cancel = this.camel_align_cancellable;
-            }
-
-            var aligned = false;
-            var had_before = 0u;
-            if (slice_started)
-                had_before = this.camel_align_had_headers;
-            else {
-                var prior = this.message_cache.get (message_cache_key (account, folder));
-                if (prior != null)
-                    had_before = prior.length;
-            }
-            try {
-                yield align_folder_with_server (account, folder, align_cancel, high, refresh_timeout);
-                aligned = align_cancel != null && !align_cancel.is_cancelled ();
-            } catch (Error e) {
-                if (Utils.is_cancelled_error (e) || (align_cancel != null && align_cancel.is_cancelled ())) {
-                    if (!slice_started) {
-                        if (job.open_folder_fill && !is_current_folder (folder)) {
-                            Utils.sync_log ("folder open tip “%s” dropped — selection moved".printf (
-                                folder.name
-                            ));
-                        } else {
-                            var resume_rank = job.rank;
-                            if (!is_current_folder (folder) && resume_rank < RANK_BACKGROUND)
-                                resume_rank = RANK_IDLE_BULK;
-                            enqueue_sync_job (
-                                SYNC_KIND_HEADERS,
-                                folder,
-                                resume_rank,
-                                job.refresh_timeout_seconds,
-                                job.force_graph_refresh,
-                                job.open_folder_fill && is_current_folder (folder)
-                            );
-                            Utils.sync_log ("headers “%s” interrupted — requeued".printf (folder.name));
-                        }
-                    } else if (job.open_folder_fill) {
-                        /* User left this folder. The ews patch does not commit
-                         * a cancelled walk, so do not chain another slice. */
-                        if (is_current_folder (folder) && !this.tearing_down) {
-                            enqueue_sync_job (
-                                SYNC_KIND_HEADERS,
-                                folder,
-                                job.rank,
-                                job.refresh_timeout_seconds,
-                                job.force_graph_refresh,
-                                true
-                            );
-                            Utils.sync_log ("folder open fill “%s” interrupted — requeued".printf (
-                                folder.name
-                            ));
-                        } else {
-                            Utils.sync_log ("folder open fill “%s” paused".printf (folder.name));
-                        }
-                        aligned = false;
-                    } else {
-                        Utils.sync_log (
-                            "camel align “%s” ended (budget or quit)".printf (folder.name)
-                        );
-                        /* Budget end still counts as a finished slice for continue. */
-                        aligned = true;
-                    }
-                } else {
-                    debug ("Headers %s: %s", folder.name, e.message);
-                }
-            } finally {
-                if (slice_started) {
-                    /* Hold the yield gate *before* clearing busy and before any
-                     * await below, so enqueue_pending_deep_syncs cannot start
-                     * another FORCE in the gap (that cancelled mid-refresh). */
-                    if (is_force || folder_deep_sync_pending (account, folder))
-                        this.camel_align_yielding = true;
-                    end_camel_align_slice ();
-                }
-                if (current)
-                    this.conversation_sync_spinner.visible = false;
-                if (show_status)
-                    hide_sync_status (token);
-            }
-            if (aligned) {
-                /* Snapshot before note_scout / tip can clear the session flag. */
-                var incomplete = this.mail_session.last_list_refresh_incomplete;
-                /* Continue exclusive slices before optional Camel-count telemetry
-                 * awaits — gate already held via camel_align_yielding. */
-                if (is_force || folder_deep_sync_pending (account, folder)) {
-                    yield maybe_continue_deep_folder_sync (
-                        account,
-                        folder,
-                        had_before,
-                        is_force,
-                        incomplete
-                    );
-                } else {
-                    this.camel_align_yielding = false;
-                }
-                uint letter_n = 0;
-                uint letter_unread = 0;
-                local_header_stats (account, folder, out letter_n, out letter_unread);
-                try {
-                    var camel_n = yield this.mail_session.local_uid_count (
-                        account,
-                        folder,
-                        null
-                    );
-                    Utils.sync_log (
-                        "Camel vs Letter after align “%s” summary_uids=%d letter_headers=%u incomplete=%s (local Camel, not Graph)".printf (
-                            folder.name,
-                            camel_n,
-                            letter_n,
-                            incomplete ? "yes" : "no"
-                        )
-                    );
-                } catch (Error e) {
-                    Utils.sync_log (
-                        "Camel vs Letter after align “%s” letter_headers=%u (camel count skipped: %s)".printf (
-                            folder.name,
-                            letter_n,
-                            e.message
-                        )
-                    );
-                }
-                if (!is_slice && job.rank >= RANK_IDLE_BULK && !current)
-                    yield note_scout_align_result (account, folder, refresh_timeout);
-                relieve_after_folder_align (account, folder);
-                current = is_current_folder (folder);
-                enqueue_body_prefetch_after_headers (folder, current);
-            } else {
-                if (slice_started)
-                    this.camel_align_yielding = false;
-                if (!is_slice && cancellable.is_cancelled ()) {
-                    if (!(job.open_folder_fill && !is_current_folder (folder)))
-                        requeue_sync_job (job);
-                }
-            }
-            return;
-        }
-
-        if (folder_skips_body_prefetch (folder))
-            return;
-
-        if (job.kind == SYNC_KIND_CACHE_ALIGN) {
-            remember_body_fill_folder (folder);
-            var token = show_sync_status (_("Updating “%s”…").printf (folder.name));
-            try {
-                yield run_cache_align (account, folder, cancellable);
-                if (cancellable.is_cancelled ()) {
-                    requeue_cache_align_after_interrupt (folder, job.rank);
-                    Utils.sync_log ("cache-align “%s” interrupted — requeued".printf (folder.name));
-                }
-            } catch (Error e) {
-                if (Utils.is_cancelled_error (e) || cancellable.is_cancelled ()) {
-                    requeue_cache_align_after_interrupt (folder, job.rank);
-                    Utils.sync_log ("cache-align “%s” interrupted — requeued".printf (folder.name));
-                } else {
-                    debug ("Cache align %s: %s", folder.name, e.message);
-                    clear_body_fill_folder (folder);
-                }
-            } finally {
-                hide_sync_status (token);
-            }
-            return;
-        }
-
-        remember_body_fill_folder (folder);
-        var token = show_sync_status (_("Downloading messages in “%s”…").printf (folder.name));
-        try {
-            if (Utils.process_rss_above_soft_ceiling ()) {
-                this.mail_session.relieve_memory_pressure ();
-                if (Utils.process_rss_above_soft_ceiling ()) {
-                    Utils.sync_log (
-                        "prefetch “%s” paused — RSS %s above soft ceiling %s".printf (
-                            folder.name,
-                            format_byte_size (Utils.process_rss_bytes ()),
-                            format_byte_size (Utils.process_rss_soft_ceiling_bytes ())
-                        )
-                    );
-                    /* Do not requeue here — that hot-loops the pump. Resume on
-                     * the next sync timer or F5; the on-disk cursor continues
-                     * the preference window. */
-                    clear_body_fill_folder (folder);
-                    return;
-                }
-            }
-            var listed = this.message_cache.get (message_cache_key (account, folder));
-            if (listed == null || listed.length == 0) {
-                clear_body_fill_folder (folder);
-                return;
-            }
-            var days = body_cache_days ();
-            var max_index = body_prefetch_max_index (account, folder);
-            var fetched = yield this.mail_session.prefetch_recent (
-                account,
-                folder,
-                listed,
-                days,
-                cancellable,
-                max_index
-            );
-            if (fetched >= MailSession.PREFETCH_NETWORK_CHUNK) {
-                /* Stay on this folder until its download window is complete.
-                 * If the user already left, park the rest behind the new folder. */
-                var resume_rank = is_current_folder (folder)
-                    ? job.rank
-                    : int.max (job.rank, RANK_CACHE_ALIGN);
-                enqueue_sync_job (SYNC_KIND_BODIES, folder, resume_rank);
-            } else {
-                clear_body_fill_folder (folder);
-            }
-        } catch (Error e) {
-            if (e is IOError.CANCELLED) {
-                /* Folder switch parks this chunk behind the folder just opened.
-                 * Send / preempt while the folder stays current keeps its rank. */
-                if (is_current_folder (folder)) {
-                    enqueue_sync_job (SYNC_KIND_BODIES, folder, job.rank);
-                    remember_body_fill_folder (folder);
-                } else {
-                    enqueue_sync_job (SYNC_KIND_BODIES, folder, RANK_CACHE_ALIGN);
-                }
-                Utils.sync_log ("prefetch “%s” interrupted — requeued".printf (folder.name));
-            } else {
-                debug ("Prefetch %s: %s", folder.name, e.message);
-                clear_body_fill_folder (folder);
-            }
-        } finally {
-            hide_sync_status (token);
-        }
-    }
-
-    private void remember_body_fill_folder (Folder folder) {
-        if (this.body_fill_folder == null || this.body_fill_folder == folder.full_name)
-            this.body_fill_folder = folder.full_name;
-    }
-
-    private void clear_body_fill_folder (Folder folder) {
-        if (this.body_fill_folder == folder.full_name)
-            this.body_fill_folder = null;
-    }
-
-    private void requeue_cache_align_after_interrupt (Folder folder, int rank) {
-        if (is_current_folder (folder)) {
-            enqueue_sync_job (SYNC_KIND_CACHE_ALIGN, folder, rank);
-            remember_body_fill_folder (folder);
-        } else {
-            enqueue_sync_job (SYNC_KIND_CACHE_ALIGN, folder, RANK_CACHE_ALIGN);
-        }
-    }
 
     private int body_cache_days () {
         var days = this.settings.get_int ("body-cache-days");
@@ -3286,136 +1623,6 @@ public class Mail.Window : Adw.ApplicationWindow {
         return days;
     }
 
-    private async void run_cache_align (Account account, Folder folder, Cancellable cancellable) {
-        try {
-            yield hydrate_folder_headers (account, folder, cancellable);
-            if (cancellable.is_cancelled () || !is_current_account (account))
-                return;
-
-            var listed = this.message_cache.get (message_cache_key (account, folder));
-            if (listed == null || listed.length == 0)
-                return;
-
-            var days = body_cache_days ();
-            yield this.mail_session.prune_stale_bodies (account, folder, listed, days, cancellable);
-            if (cancellable.is_cancelled () || !is_current_account (account))
-                return;
-
-            enqueue_sync_job (SYNC_KIND_BODIES, folder, RANK_CACHE_ALIGN);
-        } catch (Error e) {
-            if (Utils.is_cancelled_error (e) || cancellable.is_cancelled ())
-                throw e;
-            debug ("Cache align %s: %s", folder.name, e.message);
-        }
-    }
-
-    private async void pump_sync () {
-        if (this.sync_pump_running)
-            return;
-
-        var account = this.selected_account;
-        if (this.mail_session == null || account == null || account.kind == AccountKind.LOCAL || !account.has_mail)
-            return;
-
-        this.sync_pump_running = true;
-        var cancellable = this.idle_cancellable ?? new Cancellable ();
-        this.idle_cancellable = cancellable;
-        try {
-            while (!cancellable.is_cancelled ()) {
-                var job = take_best_sync_job ();
-                if (job == null)
-                    break;
-
-                /* Don't start another Archive body chunk while send/open waits,
-                 * while archive/move flush owns Camel, or while FolderSearch
-                 * is running. Parked heavy moves alone must not starve body fill. */
-                if (this.search_busy
-                    && (job.kind == SYNC_KIND_BODIES || job.kind == SYNC_KIND_CACHE_ALIGN)) {
-                    enqueue_sync_job (job.kind, job.folder, job.rank);
-                    Timeout.add (250, pump_sync.callback);
-                    yield;
-                    continue;
-                }
-                if (this.mail_session != null
-                    && (this.mail_session.priority_camel_waiting
-                        || this.mail_session.has_blocking_local_flushes ())
-                    && job.rank >= RANK_CACHE
-                    && (job.kind == SYNC_KIND_BODIES || job.kind == SYNC_KIND_CACHE_ALIGN)) {
-                    enqueue_sync_job (job.kind, job.folder, job.rank);
-                    Timeout.add (250, pump_sync.callback);
-                    yield;
-                    continue;
-                }
-
-                /* Header refresh while moves/flags are still pending for this
-                 * folder used to requeue with Idle (no delay) → hundreds of
-                 * thousands of “Updating…” spins and a wedged UI. */
-                if (this.mail_session != null
-                    && job.kind == SYNC_KIND_HEADERS
-                    && job.folder != null
-                    && this.mail_session.folder_has_pending_flags (account, job.folder)) {
-                    requeue_sync_job (job);
-                    Timeout.add (500, pump_sync.callback);
-                    yield;
-                    continue;
-                }
-
-                /* Ops yield between Camel align slices — do not start ANY
-                 * FORCE/deep refresh_info early (rank FORCE was wrongly allowed
-                 * because only BACKGROUND continues were deferred). */
-                if (this.camel_align_yielding
-                    && job_is_camel_align_slice (job)) {
-                    requeue_sync_job (job);
-                    Timeout.add (500, pump_sync.callback);
-                    yield;
-                    continue;
-                }
-
-                /* Any refresh_info waits while an exclusive slice owns Graph.
-                 * A folder-open tip must not run beside startup / Update Folder. */
-                if (this.camel_align_busy && job.kind == SYNC_KIND_HEADERS) {
-                    requeue_sync_job (job);
-                    Timeout.add (500, pump_sync.callback);
-                    yield;
-                    continue;
-                }
-
-                /* Deep sync parked by RSS guard: do not take/log/requeue in a
-                 * tight Idle loop (froze the UI with tens of thousands of
-                 * “sync job … Archivio” lines per second). Leave the job out
-                 * of the pump; deep_sync_pending + defer timer resume later. */
-                if (job.kind == SYNC_KIND_HEADERS
-                    && job.folder != null
-                    && !job_is_force_folder_refresh (job)
-                    && (job_is_deep_sync_continue (job)
-                        || folder_deep_sync_pending (account, job.folder))
-                    && !allow_deep_sync_under_rss (account, job.folder, null)) {
-                    Timeout.add (2000, pump_sync.callback);
-                    yield;
-                    continue;
-                }
-
-                Utils.sync_log ("sync job kind=%d rank=%d folder=%s queue=%u".printf (
-                    job.kind,
-                    job.rank,
-                    job.folder != null ? job.folder.name : "tree",
-                    this.sync_jobs.length
-                ));
-                yield run_sync_job (account, job, cancellable);
-                Idle.add (pump_sync.callback);
-                yield;
-            }
-        } finally {
-            this.sync_pump_running = false;
-            /* After preempt/cancel, finish draining any higher-priority jobs. */
-            if (!this.tearing_down && this.sync_jobs.length > 0) {
-                Idle.add (() => {
-                    pump_sync.begin ();
-                    return Source.REMOVE;
-                });
-            }
-        }
-    }
 
     private void queue_conversation_refresh () {
         if (!this.conversation_view || this.search_text.length > 0 || this.selected_folder == null)
@@ -3564,7 +1771,6 @@ public class Mail.Window : Adw.ApplicationWindow {
         var seen = new HashTable<string, uint8> (str_hash, str_equal);
         var token = show_sync_status (_("Searching…"));
         this.search_busy = true;
-        pause_body_prefetch_for_search ();
         Utils.sync_log ("search begin “%s”".printf (query_key));
 
         try {
@@ -3678,7 +1884,6 @@ public class Mail.Window : Adw.ApplicationWindow {
         } finally {
             this.search_busy = false;
             hide_sync_status (token);
-            resume_body_prefetch_after_search ();
         }
     }
 
@@ -3699,30 +1904,6 @@ public class Mail.Window : Adw.ApplicationWindow {
         return false;
     }
 
-    private void pause_body_prefetch_for_search () {
-        for (int i = (int) this.sync_jobs.length - 1; i >= 0; i--) {
-            var job = this.sync_jobs[i];
-            if (job.kind == SYNC_KIND_BODIES || job.kind == SYNC_KIND_CACHE_ALIGN)
-                this.sync_jobs.remove_index (i);
-        }
-        /* Never cancel mid-refresh_info — that shreds M365 Camel summaries.
-         * search_busy already parks new body jobs; wait for the slice to end. */
-        if (this.camel_align_busy)
-            return;
-        if (this.idle_cancellable != null && !this.idle_cancellable.is_cancelled ())
-            this.idle_cancellable.cancel ();
-        this.idle_cancellable = new Cancellable ();
-    }
-
-    private void resume_body_prefetch_after_search () {
-        var account = this.selected_account;
-        var folder = this.selected_folder;
-        if (account == null || folder == null || folder.is_virtual_view)
-            return;
-        if (this.search_text.length > 0)
-            return;
-        enqueue_body_prefetch_after_headers (folder, true);
-    }
 
     private async void scan_folder_headers_for_search (
         Account account,
@@ -3970,7 +2151,6 @@ public class Mail.Window : Adw.ApplicationWindow {
 
         var generation = this.search_generation;
         this.search_busy = true;
-        pause_body_prefetch_for_search ();
         var token = show_sync_status (_("Indexing more local messages…"));
         uint indexed = 0;
         try {
@@ -4000,7 +2180,6 @@ public class Mail.Window : Adw.ApplicationWindow {
         } finally {
             hide_sync_status (token);
             this.search_busy = false;
-            resume_body_prefetch_after_search ();
         }
 
         if (generation != this.search_generation || this.search_text != query_key)
@@ -4404,11 +2583,8 @@ public class Mail.Window : Adw.ApplicationWindow {
             : _("Offline");
         this.idle_cancellable?.cancel ();
         this.idle_cancellable = new Cancellable ();
-        this.sync_jobs = new GenericArray<MailSyncJob> ();
-        this.folder_scout_cursor = 0;
-        this.body_fill_folder = null;
-        clear_all_bulk_refresh_backoff ();
-        stop_folder_scout ();
+        this.folder_sync_pending_name = null;
+        this.folder_sync_serial++;
         this.mail_session?.unwatch_all_folders ();
         bind_reader_mailbox ();
         sync_account_selection (account);
@@ -4658,7 +2834,6 @@ public class Mail.Window : Adw.ApplicationWindow {
             }
 
             present_folder_tree (current, folders, true, cancellable);
-            this.last_full_align = Utils.sync_tick ();
         } catch (Error e) {
             if (cancellable.is_cancelled () || !is_current_account (current))
                 return;
@@ -4904,16 +3079,19 @@ public class Mail.Window : Adw.ApplicationWindow {
     private async void present_mailbox_from_cache (Account account, Cancellable cancellable) {
         /* Show the sidebar selection immediately. Full header-list preload used
          * to run first and made every account switch wait on disk I/O even when
-         * the folder tree was already cached. */
+         * the folder tree was already cached. The first open is startup sync;
+         * a click after that is folder sync. */
+        this.folder_clicks_sync = false;
         restore_folder_selection ();
-        startup_refresh.begin (cancellable);
-
         var token = show_sync_status (_("Loading local cache…"));
         try {
             yield preload_all_header_lists_from_disk (account, cancellable);
         } finally {
             hide_sync_status (token);
         }
+        /* Server work starts only after the cached tree and lists are shown. */
+        this.folder_clicks_sync = true;
+        yield startup_refresh (cancellable);
     }
 
     private async void preload_all_header_lists_from_disk (Account account, Cancellable cancellable) {
@@ -4969,25 +3147,572 @@ public class Mail.Window : Adw.ApplicationWindow {
         ));
     }
 
+    private static string sync_cursor_path () {
+        return Path.build_filename (
+            Environment.get_user_data_dir (),
+            "letter",
+            "sync-cursor"
+        );
+    }
+
+    /* phase is "headers" or "bodies". Index is the next folder in that wave. */
+    private void save_sync_cursor (Account account, string phase, uint index) {
+        var path = sync_cursor_path ();
+        var uid = account.source_uid ?? account.uid;
+        try {
+            var dir = File.new_for_path (Path.get_dirname (path));
+            dir.make_directory_with_parents ();
+        } catch (Error e) {
+            if (!(e is IOError.EXISTS)) {
+                Utils.sync_log ("startup sync cursor dir: %s".printf (e.message));
+                return;
+            }
+        }
+        try {
+            FileUtils.set_contents (path, "%s\n%s\n%u\n".printf (uid, phase, index));
+        } catch (Error e) {
+            Utils.sync_log ("startup sync cursor write: %s".printf (e.message));
+        }
+    }
+
+    private void clear_sync_cursor () {
+        try {
+            File.new_for_path (sync_cursor_path ()).delete ();
+        } catch (Error e) {
+            /* Missing file is the steady state after a finished startup. */
+        }
+        try {
+            File.new_for_path (Path.build_filename (
+                Environment.get_user_data_dir (),
+                "letter",
+                "ingresso1-cursor"
+            )).delete ();
+        } catch (Error e) {
+        }
+    }
+
+    private bool load_sync_cursor (Account account, out string phase, out uint index) {
+        phase = "headers";
+        index = 0;
+        var path = sync_cursor_path ();
+        var migrated = false;
+        if (!FileUtils.test (path, FileTest.IS_REGULAR)) {
+            path = Path.build_filename (
+                Environment.get_user_data_dir (),
+                "letter",
+                "ingresso1-cursor"
+            );
+            if (!FileUtils.test (path, FileTest.IS_REGULAR))
+                return false;
+            migrated = true;
+        }
+        try {
+            string text;
+            FileUtils.get_contents (path, out text);
+            var lines = text.split ("\n");
+            if (lines.length < 3)
+                return false;
+            var uid = account.source_uid ?? account.uid;
+            if (lines[0] != uid)
+                return false;
+            if (lines[1] != "headers" && lines[1] != "bodies")
+                return false;
+            phase = lines[1];
+            index = (uint) int.parse (lines[2]);
+            if (migrated) {
+                save_sync_cursor (account, phase, index);
+                try {
+                    File.new_for_path (path).delete ();
+                } catch (Error migrate_error) {
+                }
+            }
+            return true;
+        } catch (Error e) {
+            Utils.sync_log ("startup sync cursor read: %s".printf (e.message));
+            return false;
+        }
+    }
+
+    /* 0 inbox tree, 1 sent tree, 2 every other real folder, 3 trash and junk.
+     * The group is the nearest ancestor role, not the folder's own name. */
+    private static int sync_folder_group (GenericArray<Folder> folders, uint index) {
+        uint idx = index;
+        for (int guard = 0; guard < 64; guard++) {
+            var folder = folders[idx];
+            switch (folder.kind) {
+                case FolderKind.INBOX:
+                    return 0;
+                case FolderKind.SENT:
+                    return 1;
+                case FolderKind.TRASH:
+                case FolderKind.JUNK:
+                    return 3;
+                default:
+                    break;
+            }
+            if (folder.indent <= 0)
+                return 2;
+            bool found = false;
+            for (int i = (int) idx - 1; i >= 0; i--) {
+                if (folders[i].indent < folder.indent) {
+                    idx = (uint) i;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found)
+                return 2;
+        }
+        return 2;
+    }
+
+    private GenericArray<Folder> sync_folder_order () {
+        var source = folders_from_tree (false);
+        var groups = new GenericArray<Folder>[4];
+        for (int g = 0; g < 4; g++)
+            groups[g] = new GenericArray<Folder> ();
+        for (uint i = 0; i < source.length; i++) {
+            var folder = source[i];
+            if (folder.is_virtual_view || folder.is_gmail_namespace)
+                continue;
+            groups[sync_folder_group (source, i)].add (folder);
+        }
+        var ordered = new GenericArray<Folder> ();
+        for (int g = 0; g < 4; g++) {
+            for (uint i = 0; i < groups[g].length; i++)
+                ordered.add (groups[g][i]);
+        }
+        Utils.sync_log (
+            "%s order: inbox=%u sent=%u other=%u trash/junk=%u".printf (
+                this.sync_log_name,
+                groups[0].length,
+                groups[1].length,
+                groups[2].length,
+                groups[3].length
+            )
+        );
+        return ordered;
+    }
+
+    private async bool refresh_sync_tree (Account account, Cancellable cancellable) {
+        note_background_status (_("Checking folders…"));
+        Utils.sync_log ("%s — refresh folder tree".printf (this.sync_log_name));
+        GenericArray<Folder> folders;
+        try {
+            folders = yield this.mail_session.list_folders (account, cancellable, true);
+        } catch (Error e) {
+            Utils.sync_log ("%s — refresh folder tree failed: %s".printf (this.sync_log_name, e.message));
+            return false;
+        }
+        if (!is_current_account (account) || cancellable.is_cancelled () || folders.length == 0)
+            return false;
+        var added = new GenericArray<string> ();
+        var resolved = reuse_sidebar_folders (folders, added);
+        apply_folder_tree (resolved);
+        remember_folder_tree (account, resolved);
+        mark_inbox_tree_on_sidebar ();
+        this.folder_tree_needs_refresh = false;
+        Utils.sync_log (
+            "%s — tree %s (%u folders)".printf (
+                this.sync_log_name,
+                added.length == 0 ? "unchanged" : "updated",
+                resolved.length
+            )
+        );
+        return true;
+    }
+
+    private async void flush_pending_before_sync () {
+        Utils.sync_log ("%s — flush pending moves/flags".printf (this.sync_log_name));
+        yield this.mail_session.flush_pending_local_changes_async ();
+    }
+
+    /* Startup and scheduled sync step aside while the clicked folder runs.
+     * Not used from inside folder sync itself (that would wait on its own flag). */
+    private async void wait_for_folder_sync () {
+        if (this.folder_sync_pending_name == null && !this.folder_sync_active)
+            return;
+        Utils.sync_log (
+            "%s paused — click on “%s”".printf (
+                this.sync_log_name,
+                this.folder_sync_pending_name ?? "?"
+            )
+        );
+        while (!this.tearing_down
+            && (this.folder_sync_pending_name != null || this.folder_sync_active)) {
+            Timeout.add (200, wait_for_folder_sync.callback);
+            yield;
+        }
+        if (!this.tearing_down)
+            Utils.sync_log ("%s resume after click".printf (this.sync_log_name));
+    }
+
+    /* An opened message and search go ahead of background body downloads. */
+    private async void wait_for_body_fetch () {
+        if (!this.body_fetch_active && !this.search_busy)
+            return;
+        var why = this.body_fetch_active ? "open body" : "search";
+        Utils.sync_log ("%s bodies paused — %s".printf (this.sync_log_name, why));
+        while (!this.tearing_down && (this.body_fetch_active || this.search_busy)) {
+            Timeout.add (200, wait_for_body_fetch.callback);
+            yield;
+        }
+        if (!this.tearing_down)
+            Utils.sync_log ("%s bodies resume".printf (this.sync_log_name));
+    }
+
+    private void request_folder_sync (Folder folder) {
+        if (folder.is_virtual_view || folder.is_gmail_namespace || folder.is_local_outbox)
+            return;
+        var account = this.selected_account;
+        if (this.mail_session == null || account == null || account.kind == AccountKind.LOCAL || !account.has_mail)
+            return;
+        if (!network_is_available ())
+            return;
+        this.folder_sync_pending_name = folder.full_name;
+        var serial = ++this.folder_sync_serial;
+        Utils.sync_log ("folder sync — cache “%s”".printf (folder.name));
+        run_folder_sync.begin (folder, serial);
+    }
+
+    private async void run_folder_sync (Folder folder, uint serial) {
+        var account = this.selected_account;
+        if (this.mail_session == null || account == null)
+            return;
+        var logged_wait = false;
+        var headers_already = false;
+        while (!this.tearing_down && serial == this.folder_sync_serial) {
+            if (this.camel_align_busy && this.camel_align_full_name == folder.full_name) {
+                headers_already = true;
+                Timeout.add (300, run_folder_sync.callback);
+                yield;
+                continue;
+            }
+            if (this.camel_align_busy) {
+                if (!logged_wait) {
+                    Utils.sync_log (
+                        "folder sync waits — headers “%s” still open (delta link)".printf (
+                            this.camel_align_name ?? "?"
+                        )
+                    );
+                    logged_wait = true;
+                }
+                Timeout.add (300, run_folder_sync.callback);
+                yield;
+                continue;
+            }
+            if (this.folder_sync_active && this.folder_sync_running_serial != serial) {
+                Timeout.add (200, run_folder_sync.callback);
+                yield;
+                continue;
+            }
+            break;
+        }
+        if (this.tearing_down || serial != this.folder_sync_serial)
+            return;
+
+        this.folder_sync_active = true;
+        this.folder_sync_running_serial = serial;
+        var prev_log = this.sync_log_name;
+        this.sync_log_name = "folder sync";
+        try {
+            var ok = headers_already;
+            if (!headers_already)
+                ok = yield align_folder_headers (account, folder);
+            if (this.tearing_down || serial != this.folder_sync_serial || !is_current_account (account))
+                return;
+            if (!is_current_folder (folder))
+                return;
+            if (ok) {
+                if (this.idle_cancellable == null)
+                    this.idle_cancellable = new Cancellable ();
+                yield prefetch_folder_bodies (account, folder, this.idle_cancellable, false);
+            }
+            if (serial == this.folder_sync_serial && is_current_folder (folder))
+                Utils.sync_log ("folder sync finished “%s”".printf (folder.name));
+        } finally {
+            if (this.folder_sync_running_serial == serial) {
+                this.sync_log_name = prev_log;
+                this.folder_sync_active = false;
+                if (this.folder_sync_pending_name == folder.full_name && serial == this.folder_sync_serial)
+                    this.folder_sync_pending_name = null;
+            }
+            if (!this.tearing_down && !this.send_in_progress)
+                flush_parked_mail_check ();
+        }
+    }
+
+    private async void wait_if_sending () {
+        if (!this.send_in_progress || this.tearing_down)
+            return;
+        Utils.sync_log ("%s paused between folders — send in progress".printf (this.sync_log_name));
+        while (this.send_in_progress && !this.tearing_down) {
+            Timeout.add (300, wait_if_sending.callback);
+            yield;
+        }
+        Utils.sync_log ("%s resume after send".printf (this.sync_log_name));
+    }
+
+    private async bool align_folder_headers (Account account, Folder folder, bool user_force = false) {
+        /* A folder that already has its list gets the short tip. Pages already
+         * received stay saved, so a tip cut at 15s continues from that page.
+         * An empty folder goes straight to until-done. A silent server still
+         * ends the slice (see the stall check in refresh_folder_info). */
+        note_background_status (_("Updating “%s”…").printf (folder.name));
+        var cached = this.message_cache.get (message_cache_key (account, folder));
+        var warm = cached != null && cached.length > 0;
+        var timeout = warm
+            ? MailSession.REFRESH_INFO_BRIEF
+            : MailSession.REFRESH_INFO_FORCE_UNTIL_DONE;
+        var mode = warm ? "tip" : "until-done";
+        for (int pass = 0; pass < 2 && !this.tearing_down; pass++) {
+            Utils.sync_log ("%s headers “%s” (%s)".printf (this.sync_log_name, folder.name, mode));
+            while (!begin_camel_align_slice (folder, user_force)) {
+                if (this.tearing_down)
+                    return false;
+                Timeout.add (500, align_folder_headers.callback);
+                yield;
+            }
+            yield align_folder_with_server (
+                account,
+                folder,
+                this.camel_align_cancellable,
+                false,
+                timeout
+            );
+            var ok = this.camel_align_cancellable != null
+                && !this.camel_align_cancellable.is_cancelled ();
+            var incomplete = this.mail_session.last_list_refresh_incomplete;
+            end_camel_align_slice ();
+            if (!ok) {
+                relieve_after_folder_align (account, folder);
+                return false;
+            }
+            if (pass == 0 && warm && incomplete) {
+                Utils.sync_log (
+                    "%s headers “%s” tip unfinished — saved pages kept, continuing".printf (
+                        this.sync_log_name,
+                        folder.name
+                    )
+                );
+            } else if (incomplete) {
+                /* Cursor stays on this folder. Finished pages are already
+                 * saved; the rest of this delta is still open, so skipping
+                 * the folder would leave it unfinished. */
+                Utils.sync_log (
+                    "%s headers “%s” delta still open — retry this folder next launch".printf (
+                        this.sync_log_name,
+                        folder.name
+                    )
+                );
+                relieve_after_folder_align (account, folder);
+                return false;
+            } else {
+                relieve_after_folder_align (account, folder);
+                return true;
+            }
+            timeout = MailSession.REFRESH_INFO_FORCE_UNTIL_DONE;
+            mode = "until-done";
+        }
+        return false;
+    }
+
+    private async void prefetch_folder_bodies (
+        Account account,
+        Folder folder,
+        Cancellable cancellable,
+        bool yield_to_click
+    ) {
+        if (folder_skips_body_prefetch (folder))
+            return;
+        var listed = this.message_cache.get (message_cache_key (account, folder));
+        if (listed == null || listed.length == 0)
+            return;
+        note_background_status (_("Downloading messages in “%s”…").printf (folder.name));
+        Utils.sync_log ("%s bodies “%s”".printf (this.sync_log_name, folder.name));
+        var days = body_cache_days ();
+        var max_index = body_prefetch_max_index (account, folder);
+        while (!cancellable.is_cancelled () && is_current_account (account) && !this.tearing_down) {
+            if (!yield_to_click && !is_current_folder (folder))
+                return;
+            yield wait_if_sending ();
+            if (yield_to_click)
+                yield wait_for_folder_sync ();
+            yield wait_for_body_fetch ();
+            if (Utils.process_rss_above_soft_ceiling ()) {
+                this.mail_session.relieve_memory_pressure ();
+                if (Utils.process_rss_above_soft_ceiling ()) {
+                    Utils.sync_log ("%s bodies “%s” paused — memory".printf (this.sync_log_name, folder.name));
+                    Timeout.add_seconds (30, prefetch_folder_bodies.callback);
+                    yield;
+                    continue;
+                }
+            }
+            uint fetched = 0;
+            try {
+                fetched = yield this.mail_session.prefetch_recent (
+                    account,
+                    folder,
+                    listed,
+                    days,
+                    cancellable,
+                    max_index
+                );
+            } catch (Error e) {
+                if (!(e is IOError.CANCELLED))
+                    Utils.sync_log ("%s bodies “%s” failed: %s".printf (this.sync_log_name, folder.name, e.message));
+                return;
+            }
+            if (fetched < MailSession.PREFETCH_NETWORK_CHUNK)
+                return;
+        }
+    }
+
+    /* Headers of every real folder, then bodies. resume reads the cursor file.
+     * Returns false when the wave stops early and the cursor stays put. */
+    private async bool run_sync_walk (
+        Account account,
+        Cancellable cancellable,
+        GenericArray<Folder> ordered,
+        bool resume
+    ) {
+        string phase = "headers";
+        uint index = 0;
+        if (resume && !load_sync_cursor (account, out phase, out index)) {
+            phase = "headers";
+            index = 0;
+        }
+        if (index > ordered.length)
+            index = ordered.length;
+        Utils.sync_log (
+            "%s resume %s at %u/%u".printf (this.sync_log_name, phase, index, ordered.length)
+        );
+
+        if (phase == "headers") {
+            for (uint i = index; i < ordered.length; i++) {
+                if (this.tearing_down || cancellable.is_cancelled () || !is_current_account (account))
+                    return false;
+                yield wait_if_sending ();
+                yield wait_for_folder_sync ();
+                var folder = ordered[i];
+                int group = 2;
+                var all = folders_from_tree (false);
+                for (uint n = 0; n < all.length; n++) {
+                    if (all[n].full_name == folder.full_name) {
+                        group = sync_folder_group (all, n);
+                        break;
+                    }
+                }
+                var step = group == 0 ? 4 : group == 1 ? 5 : group == 3 ? 7 : 6;
+                Utils.sync_log (
+                    "%s step %d — “%s” (%u/%u)".printf (
+                        this.sync_log_name,
+                        step,
+                        folder.name,
+                        i + 1,
+                        ordered.length
+                    )
+                );
+                var ok = yield align_folder_headers (account, folder);
+                if (!ok) {
+                    save_sync_cursor (account, "headers", i);
+                    Utils.sync_log (
+                        "%s headers stopped at “%s” — cursor kept".printf (
+                            this.sync_log_name,
+                            folder.name
+                        )
+                    );
+                    return false;
+                }
+                save_sync_cursor (account, "headers", i + 1);
+            }
+            phase = "bodies";
+            index = 0;
+            save_sync_cursor (account, "bodies", 0);
+        }
+
+        Utils.sync_log ("%s step 8 — bodies".printf (this.sync_log_name));
+        for (uint i = index; i < ordered.length; i++) {
+            if (this.tearing_down || cancellable.is_cancelled () || !is_current_account (account))
+                return false;
+            yield wait_for_folder_sync ();
+            yield prefetch_folder_bodies (account, ordered[i], cancellable, true);
+            save_sync_cursor (account, "bodies", i + 1);
+        }
+
+        clear_sync_cursor ();
+        return true;
+    }
+
+    /* Same folders as startup sync, with the folder on screen moved to the front. */
+    private GenericArray<Folder> scheduled_sync_order () {
+        var ordered = sync_folder_order ();
+        var open = this.selected_folder;
+        if (open == null || open.is_virtual_view)
+            return ordered;
+        uint found = ordered.length;
+        for (uint i = 0; i < ordered.length; i++) {
+            if (ordered[i].full_name == open.full_name) {
+                found = i;
+                break;
+            }
+        }
+        if (found == 0 || found >= ordered.length)
+            return ordered;
+        var next = new GenericArray<Folder> ();
+        next.add (ordered[found]);
+        for (uint i = 0; i < ordered.length; i++) {
+            if (i != found)
+                next.add (ordered[i]);
+        }
+        Utils.sync_log (
+            "scheduled sync — open folder “%s” first".printf (open.name)
+        );
+        return next;
+    }
+
     private async void startup_refresh (Cancellable cancellable) {
         var account = this.selected_account;
+        if (this.mail_session == null || account == null || account.kind == AccountKind.LOCAL || !account.has_mail)
+            return;
+        if (this.startup_sync_active)
+            return;
+
+        this.startup_sync_active = true;
+        this.mailbox_bootstrapping = false;
+        var finished = false;
+        push_background_status (_("Checking folders…"));
         try {
-            if (this.mail_session == null || account == null || account.kind == AccountKind.LOCAL || !account.has_mail)
+            Utils.sync_log ("startup sync step 1 — cache_first (lists already on screen)");
+            if (cancellable.is_cancelled () || this.tearing_down)
                 return;
 
-            Utils.sync_log ("cache-first startup for %s".printf (account.display_name));
-            this.mailbox_bootstrapping = false;
+            if (!yield refresh_sync_tree (account, cancellable))
+                return;
+            if (!is_current_account (account) || cancellable.is_cancelled ())
+                return;
 
-            if (this.folder_tree_needs_refresh) {
-                this.folder_tree_needs_refresh = false;
-                this.continue_startup_after_tree = true;
-                enqueue_sync_job (SYNC_KIND_TREE, null, RANK_TREE);
-                pump_sync.begin ();
-            } else {
-                enqueue_background_after_tree (new GenericArray<string> ());
+            watch_new_mail_folders.begin ();
+            yield flush_pending_before_sync ();
+            if (!is_current_account (account) || cancellable.is_cancelled ())
+                return;
+            if (this.mail_session.has_blocking_local_flushes ()) {
+                Utils.sync_log ("startup sync step 3 still running — headers wait");
+                return;
             }
+
+            var ordered = sync_folder_order ();
+            if (!yield run_sync_walk (account, cancellable, ordered, true))
+                return;
+            finished = true;
+            Utils.sync_log ("startup sync finished");
         } finally {
+            this.startup_sync_active = false;
             this.mailbox_bootstrapping = false;
+            pop_background_status ();
+            if (!this.tearing_down && !this.send_in_progress
+                && (finished || this.mail_check_parked || this.mail_check_wanted))
+                flush_parked_mail_check ();
         }
     }
 
@@ -5143,6 +3868,10 @@ public class Mail.Window : Adw.ApplicationWindow {
                     folder.name,
                     from_disk.length
                 ));
+            } else if (from_disk != null) {
+                store_folder_messages (account, folder, from_disk, null, false, true);
+                cached = from_disk;
+                Utils.sync_log ("open folder disk prime “%s” → 0 headers".printf (folder.name));
             }
         } else {
             /* RAM stub after live folder-changed / eviction must not win over
@@ -5170,11 +3899,12 @@ public class Mail.Window : Adw.ApplicationWindow {
             /* High-water is sync metadata only — never inflate folder.total /
              * the heading above the rows actually in the list (that made large
              * folders look full while scrolling into empty ListView space). */
-        } else if (folder_waiting_for_cache (folder)) {
-            show_folder_cache_align_loading (folder);
-        } else if (cached != null) {
+        } else if (cached != null && folder.total <= 0 && folder.unread <= 0) {
+            /* Known empty. A stale tree count must not cover it. */
             touch_message_cache_key (cache_key);
             display_messages (account, folder, cached);
+        } else if (folder_waiting_for_cache (folder)) {
+            show_folder_cache_align_loading (folder);
         } else {
             show_conversation_loading (
                 _("Loading Messages"),
@@ -5182,10 +3912,10 @@ public class Mail.Window : Adw.ApplicationWindow {
             );
         }
 
-        /* Pause body/cache work, then queue a Graph tip before the first yield
-         * so the pump cannot resume the gigabyte download ahead of this folder. */
-        park_sync_for_folder_open (folder);
-        enqueue_folder_open_server_tip (account, folder);
+        /* Cache is already on screen. A click after the first open syncs
+         * this folder (headers, then its bodies) ahead of the background wave. */
+        if (this.folder_clicks_sync)
+            request_folder_sync (folder);
 
         try {
             yield this.mail_session.follow_folder (account, folder);
@@ -5203,8 +3933,8 @@ public class Mail.Window : Adw.ApplicationWindow {
         cached = this.message_cache.get (cache_key);
         var need_hydrate = cached == null;
         if (!need_hydrate && cached.length > 0) {
-            /* Don't block folder open on Camel when a deep-sync wave holds the
-             * lock — disk/RAM list is already on screen. */
+            /* Don't block folder open on Camel when a header sync holds the
+             * lock — the disk or RAM list is already on screen. */
             if (!this.mail_session.header_sync_busy) {
                 need_hydrate = yield headers_lag_camel_summary (
                     account,
@@ -5215,8 +3945,6 @@ public class Mail.Window : Adw.ApplicationWindow {
             }
         }
         if (need_hydrate) {
-            /* Folder open already paused background work. Do not preempt again:
-             * that would cancel the tip just queued for this folder. */
             yield hydrate_folder_headers (
                 account,
                 folder,
@@ -5235,9 +3963,13 @@ public class Mail.Window : Adw.ApplicationWindow {
             }
         }
         cached = this.message_cache.get (cache_key);
-        /* Empty list + server/tree says mail exists → wait placeholder only.
-         * Incomplete-but-nonempty stays visible (cache-first). */
-        if ((cached == null || cached.length == 0)
+        /* A finished align already stored an empty list and cleared the badge.
+         * The pre-click hint must not put the aligning spinner back on top. */
+        if (cached != null && cached.length == 0
+            && folder.total <= 0 && folder.unread <= 0) {
+            if (is_current_folder (folder) && this.search_text.length == 0)
+                display_messages (account, folder, cached);
+        } else if ((cached == null || cached.length == 0)
             && (folder.total > 0 || folder.unread > 0 || hint_total > 0 || hint_unread > 0)
             && !folder_is_incoming_watch (folder)
             && !folder.is_gmail_namespace) {
@@ -5249,103 +3981,6 @@ public class Mail.Window : Adw.ApplicationWindow {
         }
         /* Do not bump folder.total to header high-water here — the list must
          * match the heading; deep sync catches the watermark in the background. */
-    }
-
-    /* Avoid hammering Graph when the open folder is already caught up. */
-    private const int64 FOLDER_OPEN_TIP_COOLDOWN = 20 * TimeSpan.SECOND;
-
-    /* Stop the in-flight body/cache chunk and demote other folders' interactive
-     * jobs. The queue stays — it resumes when this folder's window finishes or
-     * the user selects something else. An in-flight startup / Update Folder
-     * until-done is left running; only a folder-open fill is paused. */
-    private void park_sync_for_folder_open (Folder folder) {
-        for (int i = (int) this.sync_jobs.length - 1; i >= 0; i--) {
-            var job = this.sync_jobs[i];
-            if (job.folder != null && job.folder.full_name == folder.full_name)
-                continue;
-            if (job.open_folder_fill) {
-                this.sync_jobs.remove_index (i);
-                continue;
-            }
-            /* Body chunks of the folder we just left must not tie with the
-             * one now selected. Header jobs (new mail, tree, until-done) stay. */
-            if ((job.kind == SYNC_KIND_BODIES || job.kind == SYNC_KIND_CACHE_ALIGN)
-                && job.rank < RANK_CACHE_ALIGN)
-                job.rank = RANK_CACHE_ALIGN;
-        }
-        if (this.body_fill_folder != folder.full_name)
-            this.body_fill_folder = null;
-
-        if (this.camel_align_busy
-            && this.camel_align_from_open
-            && this.camel_align_full_name != folder.full_name) {
-            Utils.sync_log ("folder open — pause fill “%s”".printf (
-                this.camel_align_name ?? "?"
-            ));
-            this.camel_align_cancellable?.cancel ();
-            return;
-        }
-        if (this.camel_align_busy) {
-            Utils.sync_log ("folder open — tip “%s” waits for until-done “%s”".printf (
-                folder.name,
-                this.camel_align_name ?? "?"
-            ));
-            return;
-        }
-        if (this.idle_cancellable != null && !this.idle_cancellable.is_cancelled ())
-            this.idle_cancellable.cancel ();
-        this.idle_cancellable = new Cancellable ();
-        Utils.sync_log ("folder open — paused background for “%s”".printf (folder.name));
-    }
-
-    private void enqueue_folder_open_server_tip (Account account, Folder folder) {
-        if (this.mail_session == null || account.kind == AccountKind.LOCAL || !account.has_mail)
-            return;
-        if (folder.is_virtual_view || folder.is_gmail_namespace)
-            return;
-        if (!network_is_available ())
-            return;
-
-        uint local_total = 0;
-        uint local_unread = 0;
-        local_header_stats (account, folder, out local_total, out local_unread);
-        var expected = int.max (folder.total, 0);
-        var incomplete = (local_total == 0 && expected > 0)
-            || folder_summary_looks_incomplete (expected, local_total);
-        if (!incomplete
-            && tip_refresh_age (account, folder) < FOLDER_OPEN_TIP_COOLDOWN)
-            return;
-
-        if (incomplete) {
-            enqueue_sync_job (
-                SYNC_KIND_HEADERS,
-                folder,
-                RANK_SELECTED_HEADERS,
-                MailSession.REFRESH_INFO_FORCE_UNTIL_DONE,
-                true,
-                true
-            );
-            Utils.sync_log ("folder open — until-done “%s” (local %u, tree %d)".printf (
-                folder.name,
-                local_total,
-                expected
-            ));
-        } else {
-            mark_tip_refresh (account, folder);
-            enqueue_sync_job (
-                SYNC_KIND_HEADERS,
-                folder,
-                RANK_SELECTED_HEADERS,
-                MailSession.REFRESH_INFO_BRIEF,
-                false,
-                true
-            );
-            Utils.sync_log ("folder open — brief tip “%s” (%us)".printf (
-                folder.name,
-                MailSession.REFRESH_INFO_BRIEF
-            ));
-        }
-        pump_sync.begin ();
     }
 
     private static bool network_is_available () {
@@ -6057,8 +4692,8 @@ public class Mail.Window : Adw.ApplicationWindow {
                 messages.add (message);
         }
 
-        if (messages.length == 0)
-            return null;
+        /* Valid file with no rows is a known empty folder. null means the
+         * index is missing — the next open must not treat those the same. */
         return messages;
     }
 
@@ -6694,7 +5329,7 @@ public class Mail.Window : Adw.ApplicationWindow {
         var cache = this.message_cache.get (key);
         /* Never install a live-only stub when Letter already has a large index
          * on disk / high-water — that wiped Archive (9k → ~400) after a move
-         * flush while the RAM list had been evicted mid deep-sync. */
+         * flush while the RAM list had been evicted during a header walk. */
         if (cache == null) {
             var from_disk = load_header_list_cache (account, folder);
             if (from_disk != null && from_disk.length > 0) {
@@ -6724,15 +5359,13 @@ public class Mail.Window : Adw.ApplicationWindow {
             if (water >= MailSession.HEADER_LIST_LARGE
                 || hint >= (int) MailSession.HEADER_LIST_LARGE) {
                 Utils.sync_log (
-                    "live folder-changed skip stub “%s” (+%u, water %u, hint %d) — hydrate instead".printf (
+                    "live folder-changed skip stub “%s” (+%u, water %u, hint %d)".printf (
                         folder.name,
                         added,
                         water,
                         hint
                     )
                 );
-                enqueue_sync_job (SYNC_KIND_HEADERS, folder, RANK_BACKGROUND);
-                pump_sync.begin ();
                 return;
             }
             this.message_cache.set (key, cache);
@@ -7195,7 +5828,7 @@ public class Mail.Window : Adw.ApplicationWindow {
 
         bind_reader_mailbox ();
         var cached = this.mail_session.peek_body (account, folder, message.uid);
-        if (cached != null) {
+        if (cached != null && !cached.body_incomplete) {
             this.open_content = cached;
             this.message_reader.show_content (cached, message.outgoing);
             this.reader_bin.child = this.reader_pane;
@@ -7235,43 +5868,39 @@ public class Mail.Window : Adw.ApplicationWindow {
         this.reader_bin.child = this.reader_pane;
         set_message_actions_enabled (false);
 
-        if (this.camel_align_busy) {
-            var wait_token = show_sync_status (
-                this.camel_align_user_force
-                    ? _("Update in progress…")
-                    : _("Aligning mail cache…")
-            );
-            Utils.sync_log (
-                "open body deferred — camel align “%s” (not on disk)".printf (
-                    this.camel_align_name ?? "?"
-                )
-            );
-            while (this.camel_align_busy
-                && !cancellable.is_cancelled ()
-                && this.open_message_uid == message.uid) {
-                Timeout.add (200, load_message_body.callback);
-                yield;
-            }
-            hide_sync_status (wait_token);
-            if (cancellable.is_cancelled () || this.open_message_uid != message.uid)
-                return;
-            var after = this.mail_session.peek_body (account, folder, message.uid);
-            if (after != null) {
-                this.open_content = after;
-                this.message_reader.show_content (after, message.outgoing);
-                update_message_actions ();
-                schedule_mark_seen (account, folder, message);
-                prefetch_thread_bodies.begin (message);
-                return;
-            }
-        }
-
-        /* Never cancel a Camel align slice for open-body — wait above instead. */
-        if (!this.camel_align_busy)
-            preempt_background_sync ("open body");
-        var status_token = show_sync_status (_("Loading message…"));
-
+        this.body_fetch_active = true;
+        Utils.sync_log ("body fetch — “%s” uid %s".printf (folder.name, message.uid));
+        uint status_token = 0;
         try {
+            if (this.camel_align_busy) {
+                status_token = show_sync_status (_("Loading message…"));
+                Utils.sync_log (
+                    "body fetch waits — headers “%s” still open".printf (
+                        this.camel_align_name ?? "?"
+                    )
+                );
+                while (this.camel_align_busy
+                    && !cancellable.is_cancelled ()
+                    && this.open_message_uid == message.uid) {
+                    Timeout.add (200, load_message_body.callback);
+                    yield;
+                }
+                if (cancellable.is_cancelled () || this.open_message_uid != message.uid)
+                    return;
+                var after = this.mail_session.peek_body (account, folder, message.uid);
+                if (after != null) {
+                    this.open_content = after;
+                    this.message_reader.show_content (after, message.outgoing);
+                    update_message_actions ();
+                    schedule_mark_seen (account, folder, message);
+                    prefetch_thread_bodies.begin (message);
+                    Utils.sync_log ("body fetch finished “%s” (after headers)".printf (folder.name));
+                    return;
+                }
+            }
+
+            if (status_token == 0)
+                status_token = show_sync_status (_("Loading message…"));
             var content = yield this.mail_session.load_message (account, folder, message.uid, cancellable);
             if (cancellable.is_cancelled () || this.open_message_uid != message.uid)
                 return;
@@ -7281,6 +5910,7 @@ public class Mail.Window : Adw.ApplicationWindow {
             update_message_actions ();
             schedule_mark_seen (account, folder, message);
             prefetch_thread_bodies.begin (message);
+            Utils.sync_log ("body fetch finished “%s”".printf (folder.name));
         } catch (Error e) {
             if (cancellable.is_cancelled () || this.open_message_uid != message.uid)
                 return;
@@ -7293,9 +5923,9 @@ public class Mail.Window : Adw.ApplicationWindow {
                 timeout = 5,
             });
         } finally {
-            hide_sync_status (status_token);
-            /* Resume background body fill after the on-demand open used Camel. */
-            pump_sync.begin ();
+            this.body_fetch_active = false;
+            if (status_token != 0)
+                hide_sync_status (status_token);
         }
     }
 
@@ -7635,9 +6265,8 @@ public class Mail.Window : Adw.ApplicationWindow {
             if (is_current_folder (sent_folder) && this.search_text.length == 0)
                 display_messages (account, sent_folder, cache);
 
-            /* Soft Sent align (delta) so the server UID replaces local-sent-* soon. */
-            enqueue_sync_job (SYNC_KIND_HEADERS, sent_folder, RANK_NEW_MAIL);
-            pump_sync.begin ();
+            /* Server UID replaces local-sent-* on the next sync, not a side pump. */
+            Utils.sync_log ("sent copy local — server uid on next sync");
         }
 
         /* Regroup current list so Inbox conversations pick up the Sent copy
@@ -7706,11 +6335,6 @@ public class Mail.Window : Adw.ApplicationWindow {
         } else {
             bump_folder_total (folder);
         }
-
-        enqueue_sync_job (SYNC_KIND_HEADERS, folder, RANK_NEW_MAIL);
-        if (!folder_skips_body_prefetch (folder))
-            enqueue_sync_job (SYNC_KIND_BODIES, folder, RANK_NEW_MAIL + 1);
-        pump_sync.begin ();
     }
 
     private void on_draft_removed (Account account, Folder folder, string uid) {
@@ -8829,32 +7453,6 @@ public class Mail.Window : Adw.ApplicationWindow {
         pending.toast?.dismiss ();
     }
 
-    private void watch_local_flush_status () {
-        /* Local archive/delete/flag already updated the UI. Graph flush can sit
-         * for minutes on large queues — do not show “Synchronizing…” (misleading).
-         * Still watch so body-cache fill resumes when the queue drains. */
-        if (this.flush_status_source != 0)
-            return;
-        if (this.mail_session == null || !this.mail_session.has_active_local_flushes ()) {
-            enqueue_cache_align ();
-            pump_sync.begin ();
-            return;
-        }
-        this.flush_status_source = Timeout.add_seconds (1, () => {
-            if (this.tearing_down || this.mail_session == null) {
-                this.flush_status_source = 0;
-                return Source.REMOVE;
-            }
-            if (!this.mail_session.has_active_local_flushes ()) {
-                this.flush_status_source = 0;
-                enqueue_cache_align ();
-                pump_sync.begin ();
-                return Source.REMOVE;
-            }
-            return Source.CONTINUE;
-        });
-    }
-
     private void undo_pending_transfer (PendingTransferUndo pending) {
         if (this.mail_session == null)
             return;
@@ -9620,11 +8218,7 @@ public class Mail.Window : Adw.ApplicationWindow {
             return;
         seconds = seconds.clamp (60, 1800);
         this.sync_source = Timeout.add_seconds (seconds, () => {
-            Utils.sync_log ("timer fired (%d s) pump=%s queue=%u".printf (
-                seconds,
-                this.sync_pump_running ? "busy" : "idle",
-                this.sync_jobs.length
-            ));
+            Utils.sync_log ("timer fired (%d s)".printf (seconds));
             schedule_mail_check.begin (false);
             return Source.CONTINUE;
         });
@@ -9632,6 +8226,7 @@ public class Mail.Window : Adw.ApplicationWindow {
 
     private uint show_sync_status (string text) {
         this.sync_status_token++;
+        this.foreground_status_token = this.sync_status_token;
         this.folder_status_label.label = text;
         this.folder_status_bar.visible = true;
         return this.sync_status_token;
@@ -9641,6 +8236,41 @@ public class Mail.Window : Adw.ApplicationWindow {
         if (token != this.sync_status_token)
             return;
 
+        this.foreground_status_token = 0;
+        if (this.background_status_text != null) {
+            this.folder_status_label.label = this.background_status_text;
+            this.folder_status_bar.visible = true;
+            return;
+        }
+        this.folder_status_bar.visible = false;
+    }
+
+    /* Startup sync and scheduled sync. A folder click does not push: the bar
+     * would flash on every open. While one of these walks is up, the folder
+     * it is actually reading replaces the line. */
+    private void push_background_status (string text) {
+        this.background_status_holders++;
+        note_background_status (text);
+    }
+
+    private void note_background_status (string text) {
+        if (this.background_status_holders <= 0)
+            return;
+        this.background_status_text = text;
+        if (this.foreground_status_token != 0)
+            return;
+        this.folder_status_label.label = text;
+        this.folder_status_bar.visible = true;
+    }
+
+    private void pop_background_status () {
+        if (this.background_status_holders > 0)
+            this.background_status_holders--;
+        if (this.background_status_holders > 0)
+            return;
+        this.background_status_text = null;
+        if (this.foreground_status_token != 0)
+            return;
         this.folder_status_bar.visible = false;
     }
 
@@ -9916,8 +8546,8 @@ public class Mail.Window : Adw.ApplicationWindow {
         popup_context_menu (row, menu, group, x, y);
     }
 
-    /* Explicit Graph refresh_info for one folder — exclusive FORCE slice (~5 min).
-     * Further slices yield for send/Inbox then resume until Camel catches up. */
+    /* Update Folder: until-done header walk for this folder, then its bodies.
+     * Send and the timer do not cut it. */
     private async void confirm_update_folder (Folder folder) {
         if (folder.is_virtual_view || this.mail_session == null)
             return;
@@ -9926,14 +8556,14 @@ public class Mail.Window : Adw.ApplicationWindow {
             return;
         if (!network_is_available ())
             return;
-        if (this.camel_align_busy) {
+        if (this.camel_align_busy || this.startup_sync_active || this.scheduled_sync_active || this.folder_sync_active) {
             show_toast (_("A folder update is already in progress."));
             return;
         }
 
         var dialog = new Adw.AlertDialog (
             _("Update “%s” from server?").printf (folder.name),
-            _("Letter asks the server for new message headers and merges them into its local index. Large folders run in timed slices; sending waits until the current slice finishes (the sync is not interrupted). Between slices Letter handles new mail and queued moves.")
+            _("Letter asks the server for this folder’s headers and merges them into its local index. Sending waits until that download finishes.")
         );
         dialog.add_response ("cancel", _("Cancel"));
         dialog.add_response ("update", _("Update Folder"));
@@ -9944,10 +8574,10 @@ public class Mail.Window : Adw.ApplicationWindow {
         if (response != "update")
             return;
 
-        update_folder_from_server (folder);
+        yield update_folder_from_server (folder);
     }
 
-    private void update_folder_from_server (Folder folder) {
+    private async void update_folder_from_server (Folder folder) {
         if (folder.is_virtual_view || this.mail_session == null)
             return;
         var account = this.selected_account;
@@ -9955,396 +8585,33 @@ public class Mail.Window : Adw.ApplicationWindow {
             return;
         if (!network_is_available ())
             return;
-        if (this.camel_align_busy)
+        if (this.camel_align_busy || this.startup_sync_active || this.scheduled_sync_active || this.folder_sync_active)
             return;
 
-        Utils.sync_log ("Update Folder: Graph refresh “%s” (until-done, no budget cancel)".printf (
-            folder.name
-        ));
-        clear_bulk_refresh_backoff (account, folder);
-        set_deep_sync_pending (account, folder, true);
-        enqueue_sync_job (
-            SYNC_KIND_HEADERS,
-            folder,
-            RANK_FORCE_FOLDER,
-            MailSession.REFRESH_INFO_FORCE_UNTIL_DONE,
-            true
-        );
-        if (!folder_skips_body_prefetch (folder)) {
-            var body_rank = folder_is_bulk_storage (folder)
-                ? RANK_CACHE_ALIGN
-                : RANK_SELECTED_BODIES;
-            enqueue_sync_job (SYNC_KIND_BODIES, folder, body_rank);
-        }
-        pump_sync.begin ();
-    }
-
-    /* Letter owns the header index. After Update Folder: run until Graph finishes
-     * (FORCE_UNTIL_DONE — no wall-clock cancel). Do not chain another FORCE when
-     * Camel rewound or Graph FAILED (that restarts tip-first shred). Idle/deep
-     * (non-user) waves still require Letter to gain UIDs. Letter high-water is
-     * not Camel resume. */
-    private bool outbox_wants_camel () {
-        var app = get_application () as Application;
-        if (app?.outbox == null)
-            return false;
-        return app.outbox.pending_count > 0 || app.outbox.active_send_id != null;
-    }
-
-    private async void maybe_continue_deep_folder_sync (
-        Account account,
-        Folder folder,
-        uint had_before,
-        bool user_force,
-        bool refresh_incomplete
-    ) {
-        if (this.tearing_down || this.mail_session == null)
-            return;
-        if (!network_is_available ()) {
-            if (user_force)
-                set_deep_sync_pending (account, folder, true);
-            return;
-        }
-
-        uint local = 0;
-        uint local_unread = 0;
-        local_header_stats (account, folder, out local, out local_unread);
-        note_header_high_water (account, folder, local);
-
-        var refresh_failed = this.mail_session.last_list_refresh_failed;
-        var refresh_rewound = this.mail_session.last_list_refresh_rewound;
-        /* Socket errors leave the Camel summary in place (ews commit-on-success
-         * patch). Resume after a short yield. A real rewind means the summary
-         * was saved partial — do not immediately start another walk. */
-        if (refresh_failed && !refresh_rewound) {
-            set_deep_sync_pending (account, folder, true);
-            Utils.sync_log (
-                "Letter align resume “%s” after Graph FAILED (headers=%u)".printf (
-                    folder.name,
-                    local
-                )
-            );
-            schedule_camel_align_yield_then_continue (
-                account,
-                folder,
-                had_before,
-                local,
-                true
-            );
-            return;
-        }
-        if (refresh_rewound) {
-            set_deep_sync_pending (account, folder, false);
-            this.camel_align_yielding = false;
-            if (this.camel_align_yield_source != 0) {
-                Source.remove (this.camel_align_yield_source);
-                this.camel_align_yield_source = 0;
+        var prev_log = this.sync_log_name;
+        this.sync_log_name = "update folder";
+        push_background_status (_("Updating “%s”…").printf (folder.name));
+        try {
+            Utils.sync_log ("update folder “%s”".printf (folder.name));
+            var ok = yield align_folder_headers (account, folder, true);
+            if (!ok) {
+                show_toast (_("Folder align stopped. Try Update Folder again when the network is stable."));
+                return;
             }
-            Utils.sync_log (
-                "Letter tip merge abort “%s” — Camel rewind, stop chain (headers=%u)".printf (
-                    folder.name,
-                    local
-                )
-            );
-            flush_parked_mail_check ();
-            var toast = new Adw.Toast (
-                _("Folder align stopped after a server error. Try Update Folder again when the network is stable.")
-            ) {
-                timeout = 8,
-            };
-            this.toast_overlay.add_toast (toast);
-            return;
-        }
-
-        var letter_gained = local >= had_before ? local - had_before : 0;
-        var still_short = refresh_incomplete
-            && (user_force || letter_gained > 0);
-
-        if (!still_short) {
-            set_deep_sync_pending (account, folder, false);
-            this.camel_align_yielding = false;
-            if (this.camel_align_yield_source != 0) {
-                Source.remove (this.camel_align_yield_source);
-                this.camel_align_yield_source = 0;
+            if (is_current_folder (folder)) {
+                if (this.idle_cancellable == null)
+                    this.idle_cancellable = new Cancellable ();
+                yield prefetch_folder_bodies (account, folder, this.idle_cancellable, false);
             }
-            if (user_force)
-                note_auto_force_cooldown (account, folder);
-            Utils.sync_log (
-                "Letter tip merge settled “%s” (headers=%u gained=%u incomplete=%s%s)".printf (
-                    folder.name,
-                    local,
-                    letter_gained,
-                    refresh_incomplete ? "yes" : "no",
-                    user_force ? ", Update Folder" : ""
-                )
-            );
-            flush_parked_mail_check ();
-            return;
-        }
-
-        set_deep_sync_pending (account, folder, true);
-        if (!allow_deep_sync_under_rss (account, folder, null)) {
-            /* Keep yielding gate until RSS allows resume via enqueue_pending. */
-            return;
-        }
-
-        /* User Update Folder: chain FORCE immediately (Archive-first). F5 sets
-         * mail_check_wanted for one Inbox yield at this boundary only. */
-        if (user_force && !this.mail_check_wanted) {
-            chain_camel_align_slice_now (
-                account,
-                folder,
-                had_before,
-                local,
-                refresh_incomplete
-            );
-            return;
-        }
-
-        schedule_camel_align_yield_then_continue (
-            account,
-            folder,
-            had_before,
-            local,
-            refresh_incomplete
-        );
-    }
-
-    private void drop_queued_camel_align_jobs () {
-        uint dropped = 0;
-        for (int i = (int) this.sync_jobs.length - 1; i >= 0; i--) {
-            if (!job_is_camel_align_slice (this.sync_jobs[i]))
-                continue;
-            this.sync_jobs.remove_index (i);
-            dropped++;
-        }
-        if (dropped > 0) {
-            Utils.sync_log (
-                "camel align yield: dropped %u queued FORCE/deep job(s) — resume timer owns next slice".printf (
-                    dropped
-                )
-            );
+            Utils.sync_log ("update folder finished “%s”".printf (folder.name));
+        } finally {
+            this.sync_log_name = prev_log;
+            pop_background_status ();
+            if (!this.tearing_down)
+                flush_parked_mail_check ();
         }
     }
 
-    private void schedule_camel_align_yield_then_continue (
-        Account account,
-        Folder folder,
-        uint had_before,
-        uint local,
-        bool incomplete
-    ) {
-        var folder_key = folder.full_name;
-        var f5_inbox = this.mail_check_wanted;
-        Utils.sync_log (
-            "Letter tip merge yield “%s” — %us ops window (had=%u now=%u water=%u incomplete=%s%s)".printf (
-                folder.name,
-                CAMEL_ALIGN_YIELD_SECONDS,
-                had_before,
-                local,
-                header_high_water (account, folder),
-                incomplete ? "yes" : "no",
-                f5_inbox ? ", F5 Inbox" : ""
-            )
-        );
-
-        /* Mark yielding *before* pump so enqueue_pending_deep_syncs cannot
-         * start the next FORCE slice in the same idle turn. Drop any FORCE
-         * align already queued (deep-sync resume race) — resume timer owns it. */
-        this.camel_align_yielding = true;
-        if (this.camel_align_yield_source != 0)
-            Source.remove (this.camel_align_yield_source);
-        drop_queued_camel_align_jobs ();
-
-        /* Drain interactive work while Graph is free. */
-        if (this.mail_session != null) {
-            this.mail_session.unpark_heavy_transfers ();
-            watch_local_flush_status ();
-            this.mail_session.flush_pending_local_changes ();
-        }
-        if (f5_inbox || this.mail_check_parked)
-            flush_parked_mail_check ();
-        else
-            enqueue_incoming_folder_sync (RANK_NEW_MAIL);
-        pump_sync.begin ();
-
-        this.camel_align_yield_source = Timeout.add_seconds (CAMEL_ALIGN_YIELD_SECONDS, () => {
-            this.camel_align_yield_source = 0;
-            this.camel_align_yielding = false;
-            if (this.tearing_down)
-                return Source.REMOVE;
-            var acc = this.selected_account;
-            if (acc == null || this.mail_session == null)
-                return Source.REMOVE;
-            if (!network_is_available ())
-                return Source.REMOVE;
-
-            Folder? resume = null;
-            var folders = mailbox_sync_folders ();
-            for (uint i = 0; i < folders.length; i++) {
-                if (folders[i].full_name == folder_key) {
-                    resume = folders[i];
-                    break;
-                }
-            }
-            if (resume == null)
-                return Source.REMOVE;
-            if (!folder_deep_sync_pending (acc, resume))
-                return Source.REMOVE;
-
-            /* Send first — do not start another Graph slice while Outbox holds Camel. */
-            if (outbox_wants_camel ()) {
-                Utils.sync_log (
-                    "Letter tip merge resume deferred “%s” — Outbox/send busy".printf (resume.name)
-                );
-                schedule_camel_align_yield_then_continue (
-                    acc,
-                    resume,
-                    had_before,
-                    local,
-                    incomplete
-                );
-                return Source.REMOVE;
-            }
-
-            if (!allow_deep_sync_under_rss (acc, resume, null))
-                return Source.REMOVE;
-
-            enqueue_sync_job (
-                SYNC_KIND_HEADERS,
-                resume,
-                RANK_FORCE_FOLDER,
-                MailSession.REFRESH_INFO_FORCE_UNTIL_DONE,
-                true
-            );
-            if (!folder_skips_body_prefetch (resume))
-                enqueue_sync_job (SYNC_KIND_BODIES, resume, RANK_CACHE_ALIGN);
-            Utils.sync_log (
-                "Letter tip merge resume “%s” — next until-done slice".printf (
-                    resume.name
-                )
-            );
-            pump_sync.begin ();
-            return Source.REMOVE;
-        });
-    }
-
-    private void enqueue_pending_deep_syncs () {
-        var account = this.selected_account;
-        if (account == null || this.mail_session == null)
-            return;
-        if (this.deep_sync_pending.size () == 0)
-            return;
-        if (!network_is_available ())
-            return;
-        /* Don't pile FORCE slices on top of an active slice or its ops yield. */
-        if (this.camel_align_busy || this.camel_align_yielding || this.camel_align_yield_source != 0)
-            return;
-        if (outbox_wants_camel ())
-            return;
-        if (!allow_deep_sync_under_rss (account, null, null))
-            return;
-
-        var folders = mailbox_sync_folders ();
-        uint queued = 0;
-        for (uint i = 0; i < folders.length; i++) {
-            var folder = folders[i];
-            if (!folder_deep_sync_pending (account, folder))
-                continue;
-            enqueue_sync_job (
-                SYNC_KIND_HEADERS,
-                folder,
-                RANK_FORCE_FOLDER,
-                MailSession.REFRESH_INFO_FORCE_UNTIL_DONE,
-                true
-            );
-            if (!folder_skips_body_prefetch (folder))
-                enqueue_sync_job (SYNC_KIND_BODIES, folder, RANK_CACHE_ALIGN);
-            queued++;
-        }
-        if (queued > 0) {
-            Utils.sync_log ("deep sync resume: queued %u folder(s)".printf (queued));
-            pump_sync.begin ();
-        }
-    }
-
-    /* Soft RSS ceiling for deep sync waves. Inbox/Update Folder are unaffected.
-     * Returns false when the job should not run now. Never requeues into the
-     * sync pump — that caused a zero-delay Idle spin that froze the UI.
-     * deep_sync_pending stays set; schedule_deep_sync_rss_resume re-enqueues. */
-    private bool allow_deep_sync_under_rss (Account account, Folder? folder, MailSyncJob? job) {
-        if (this.mail_session == null)
-            return true;
-        var now = Utils.sync_tick ();
-        if (folder != null)
-            set_deep_sync_pending (account, folder, true);
-
-        if (this.deep_sync_rss_defer_until > 0 && now < this.deep_sync_rss_defer_until) {
-            schedule_deep_sync_rss_resume ();
-            return false;
-        }
-
-        if (!Utils.process_rss_above_soft_ceiling ())
-            return true;
-
-        this.mail_session.relieve_memory_pressure ();
-        if (!Utils.process_rss_above_soft_ceiling ()) {
-            Utils.sync_log (
-                "rss guard: relieved — resume deep sync (rss≈%s ceiling=%s)".printf (
-                    format_byte_size (Utils.process_rss_bytes ()),
-                    format_byte_size (Utils.process_rss_soft_ceiling_bytes ())
-                )
-            );
-            return true;
-        }
-
-        this.deep_sync_rss_defer_until = now + DEEP_SYNC_RSS_DEFER;
-        schedule_deep_sync_rss_resume ();
-        Utils.sync_log (
-            "rss guard: deferred deep sync %llds (rss≈%s ceiling=%s)".printf (
-                DEEP_SYNC_RSS_DEFER / TimeSpan.SECOND,
-                format_byte_size (Utils.process_rss_bytes ()),
-                format_byte_size (Utils.process_rss_soft_ceiling_bytes ())
-            )
-        );
-        return false;
-    }
-
-    private void schedule_deep_sync_rss_resume () {
-        if (this.deep_sync_rss_defer_source != 0)
-            return;
-        var now = Utils.sync_tick ();
-        var wait_ms = 1000u;
-        if (this.deep_sync_rss_defer_until > now) {
-            var wait = (this.deep_sync_rss_defer_until - now) / TimeSpan.MILLISECOND;
-            if (wait < 1000)
-                wait_ms = 1000u;
-            else if (wait > 180000)
-                wait_ms = 180000u;
-            else
-                wait_ms = (uint) wait;
-        }
-        this.deep_sync_rss_defer_source = Timeout.add (wait_ms, () => {
-            this.deep_sync_rss_defer_source = 0;
-            this.deep_sync_rss_defer_until = 0;
-            if (this.tearing_down || this.mail_session == null)
-                return false;
-            this.mail_session.relieve_memory_pressure ();
-            if (Utils.process_rss_above_soft_ceiling ()) {
-                this.deep_sync_rss_defer_until = Utils.sync_tick () + DEEP_SYNC_RSS_DEFER;
-                Utils.sync_log (
-                    "rss guard: still high after defer (rss≈%s) — wait again".printf (
-                        format_byte_size (Utils.process_rss_bytes ())
-                    )
-                );
-                schedule_deep_sync_rss_resume ();
-                return false;
-            }
-            Utils.sync_log ("rss guard: resume deep sync after defer");
-            enqueue_pending_deep_syncs ();
-            return false;
-        });
-    }
 
     private void popup_bookmarks_folder_menu (FolderRow row, double x, double y) {
         var group = new SimpleActionGroup ();
@@ -10423,14 +8690,7 @@ public class Mail.Window : Adw.ApplicationWindow {
         }
         var empty = new GenericArray<Message> ();
         this.message_cache.set (key, empty);
-        /* Reset high-water so deep-sync does not chase a cleared folder. */
-        this.header_count_high_water.set (key, 0);
-        try {
-            FileUtils.set_contents (header_high_water_file (account, folder), "0");
-        } catch (Error e) {
-            debug ("Could not clear header high-water: %s", e.message);
-        }
-        queue_header_list_cache_save (account, folder, empty);
+        persist_empty_header_list_now (account, folder);
         folder.unread = 0;
         folder.total = 0;
         refresh_folder_badge (folder);
@@ -10463,17 +8723,8 @@ public class Mail.Window : Adw.ApplicationWindow {
             this.toast_overlay.add_toast (new Adw.Toast (e.message) {
                 timeout = 5,
             });
-            /* Empty Junk may have soft-moved into Trash before permanent delete
-             * failed — realign Trash so Letter matches the server. */
-            if (folder.kind == FolderKind.JUNK) {
-                var trash = find_folder_kind (FolderKind.TRASH);
-                if (trash != null)
-                    enqueue_sync_job (SYNC_KIND_HEADERS, trash, RANK_BACKGROUND);
-            }
             if (is_current_folder (folder))
                 yield refresh_open_folder (true, false);
-            else
-                pump_sync.begin ();
         }
     }
 
@@ -11143,72 +9394,93 @@ public class Mail.Window : Adw.ApplicationWindow {
             return;
 
         reset_notification_sound_cycle ();
-        if (this.camel_align_busy) {
-            /* Archive-first: park once — no 8s retry spam. F5 marks Inbox for
-             * the next slice boundary; timer stays paused until settle/yield. */
+        if (this.startup_sync_active || this.scheduled_sync_active || this.folder_sync_active
+            || this.folder_sync_pending_name != null || this.camel_align_busy) {
+            /* A long header walk can stop on the last saved Graph page so this
+             * timer flushes the queue and then resumes that folder. Update
+             * Folder and a short tip are left running. */
+            var open_folder = this.selected_folder;
+            var aligning_open = open_folder != null
+                && this.camel_align_full_name == open_folder.full_name;
+            if (this.camel_align_until_done && !this.camel_align_user_force
+                && !this.send_in_progress && !aligning_open
+                && this.camel_align_cancellable != null
+                && !this.camel_align_cancellable.is_cancelled ()) {
+                Utils.sync_log (
+                    "scheduled sync interrupts header sync “%s” — page checkpoint kept".printf (
+                        this.camel_align_name ?? "?"
+                    )
+                );
+                this.camel_align_cancellable.cancel ();
+            }
             if (force_tree)
                 this.mail_check_wanted = true;
             this.mail_check_parked_force_tree |= force_tree;
             if (!this.mail_check_parked) {
                 this.mail_check_parked = true;
-                Utils.sync_log (
-                    force_tree
-                        ? "mail check parked — F5 during camel align “%s” (Inbox at slice boundary)".printf (
-                            this.camel_align_name ?? "?"
-                        )
-                        : "mail check paused — camel align “%s”".printf (
-                            this.camel_align_name ?? "?"
-                        )
-                );
-            } else if (force_tree) {
-                Utils.sync_log (
-                    "mail check — F5 noted during camel align “%s”".printf (
-                        this.camel_align_name ?? "?"
-                    )
-                );
+                var why = this.startup_sync_active
+                    ? "startup sync"
+                    : this.scheduled_sync_active
+                        ? "scheduled sync"
+                        : this.folder_sync_active || this.folder_sync_pending_name != null
+                            ? "folder sync"
+                            : "headers “%s”".printf (this.camel_align_name ?? "?");
+                Utils.sync_log ("scheduled sync parked — %s".printf (why));
             }
             return;
         }
-        preempt_background_sync (force_tree ? "manual refresh" : "sync timer");
 
-        /* Commit toast-pending archives/deletes, then wait until Camel has
-         * pushed them before Inbox refresh — otherwise moved mail reappears
-         * and is notified as new. */
-        commit_pending_transfer_undo ();
-        watch_local_flush_status ();
-        /* F5 and sync timer: clear any leftover parks so both paths drain
-         * the same pending move queue. */
-        this.mail_session.unpark_heavy_transfers ();
-        yield this.mail_session.flush_pending_local_changes_async ();
-        if (this.tearing_down || !is_current_account (account))
-            return;
+        this.scheduled_sync_active = true;
+        this.sync_log_name = "scheduled sync";
+        push_background_status (_("Checking folders…"));
+        try {
+            Utils.sync_log (force_tree ? "scheduled sync (F5)" : "scheduled sync (timer)");
+            if (!yield refresh_sync_tree (account, this.idle_cancellable))
+                return;
+            if (this.tearing_down || !is_current_account (account))
+                return;
 
-        /* Don't refresh Inbox from Camel while archives/moves are still
-         * flushing — that resurrects mail the UI already hid. Parked heavy
-         * Archive jobs retry later and must not defer mail-check. */
-        if (this.mail_session.has_blocking_local_flushes ()) {
-            Utils.sync_log ("mail check deferred — local flush still running");
-            /* Do not enqueue Archive body fill here: it fights the move queue. */
-            this.mail_session.flush_pending_local_changes ();
-            Timeout.add_seconds (8, () => {
-                if (!this.tearing_down)
-                    schedule_mail_check.begin (false);
-                return Source.REMOVE;
-            });
-            return;
+            commit_pending_transfer_undo ();
+            this.mail_session.unpark_heavy_transfers ();
+            yield flush_pending_before_sync ();
+            if (this.tearing_down || !is_current_account (account))
+                return;
+            if (this.mail_session.has_blocking_local_flushes ()) {
+                Utils.sync_log ("scheduled sync step 2 still running — folders wait");
+                Timeout.add_seconds (8, () => {
+                    if (!this.tearing_down)
+                        schedule_mail_check.begin (false);
+                    return Source.REMOVE;
+                });
+                return;
+            }
+
+            string phase;
+            uint index;
+            if (load_sync_cursor (account, out phase, out index)) {
+                Utils.sync_log (
+                    "scheduled sync step 3 — resume startup (%s at %u), no full pass".printf (
+                        phase,
+                        index
+                    )
+                );
+                if (!yield run_sync_walk (account, this.idle_cancellable, sync_folder_order (), true))
+                    return;
+                Utils.sync_log ("scheduled sync finished");
+                return;
+            }
+
+            Utils.sync_log ("scheduled sync step 4 — all folders");
+            if (!yield run_sync_walk (account, this.idle_cancellable, scheduled_sync_order (), false))
+                return;
+            Utils.sync_log ("scheduled sync finished");
+        } finally {
+            this.scheduled_sync_active = false;
+            this.sync_log_name = "startup sync";
+            pop_background_status ();
+            if (!this.tearing_down && !this.send_in_progress)
+                flush_parked_mail_check ();
         }
-
-        var full_due = force_tree || this.last_full_align == 0
-            || (Utils.sync_tick () - this.last_full_align) >= (int64) FULL_ALIGN_SECONDS * 1000 * 1000;
-        if (full_due)
-            enqueue_sync_job (SYNC_KIND_TREE, null, RANK_TREE);
-        enqueue_new_mail_sync ();
-        /* Resume body fill after the timer (send/preempt may have cancelled it). */
-        enqueue_cache_align ();
-        pump_sync.begin ();
-        /* After Inbox work is queued, probe Sent/Archive/… for cold empty
-         * lists or warm count drift (mobile / other clients). */
-        schedule_folder_scout (force_tree ? 4 : 8);
     }
 
     private GenericArray<Folder> folders_from_tree (bool include_virtual = true) {
@@ -11422,33 +9694,20 @@ public class Mail.Window : Adw.ApplicationWindow {
             Source.remove (this.sync_source);
             this.sync_source = 0;
         }
-        if (this.deep_sync_rss_defer_source != 0) {
-            Source.remove (this.deep_sync_rss_defer_source);
-            this.deep_sync_rss_defer_source = 0;
-        }
-        this.deep_sync_rss_defer_until = 0;
-        stop_folder_scout ();
         if (this.search_source != 0) {
             Source.remove (this.search_source);
             this.search_source = 0;
         }
         this.search_generation++;
         this.display_messages_generation++;
-        if (this.body_prefetch_scroll_source != 0) {
-            Source.remove (this.body_prefetch_scroll_source);
-            this.body_prefetch_scroll_source = 0;
-        }
         cancel_mark_seen ();
         if (this.conversation_index_source != 0) {
             Source.remove (this.conversation_index_source);
             this.conversation_index_source = 0;
         }
         this.idle_cancellable?.cancel ();
-        if (this.camel_align_yield_source != 0) {
-            Source.remove (this.camel_align_yield_source);
-            this.camel_align_yield_source = 0;
-        }
-        this.camel_align_yielding = false;
+        this.folder_sync_pending_name = null;
+        this.folder_sync_serial++;
         this.mail_check_parked = false;
         this.mail_check_parked_force_tree = false;
         this.mail_check_wanted = false;
@@ -11463,7 +9722,6 @@ public class Mail.Window : Adw.ApplicationWindow {
         }
         this.camel_align_cancellable?.cancel ();
         end_camel_align_slice ();
-        this.sync_jobs = new GenericArray<MailSyncJob> ();
 
         this.restoring_selection = true;
         this.message_list.factory = null;
@@ -11519,16 +9777,4 @@ private class Mail.PendingTransferUndo {
     public GenericArray<TransferUndoItem> items;
     public Adw.Toast? toast;
     public bool resolved;
-}
-
-private class Mail.MailSyncJob : Object {
-    public int kind;
-    public Folder? folder;
-    public int rank;
-    /* 0 = default HIGH/LOW timeouts; REFRESH_INFO_SKIP = Camel merge only. */
-    public uint refresh_timeout_seconds;
-    /* User “Update Folder” or the one-shot startup Archive refresh. */
-    public bool force_graph_refresh;
-    /* Clicked folder: brief tip, or until-done while it stays selected. */
-    public bool open_folder_fill;
 }
