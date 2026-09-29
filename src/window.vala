@@ -233,6 +233,7 @@ public class Mail.Window : Adw.ApplicationWindow {
         add_action_entries (WINDOW_ACTIONS, this);
         Utils.add_mail_letter_shortcuts (this);
         set_message_actions_enabled (false);
+        notify["focus-widget"].connect (() => update_message_actions ());
         notify["fullscreened"].connect (sync_fullscreen_action);
         bind_primary_menu ();
 
@@ -8123,7 +8124,7 @@ public class Mail.Window : Adw.ApplicationWindow {
             set_win_action_enabled ("send-again", false);
             set_win_action_enabled ("move", has);
             set_win_action_enabled ("archive", any_archive);
-            set_win_action_enabled ("delete", has);
+            set_win_action_enabled ("delete", has && !focus_in_text_input ());
             set_win_action_enabled ("mark-unread", any_read);
             set_win_action_enabled ("mark-read", any_unread);
             set_win_action_enabled ("bookmark", false);
@@ -8166,7 +8167,7 @@ public class Mail.Window : Adw.ApplicationWindow {
         );
         set_win_action_enabled ("move", !outbox && (has_message || thread_n > 1));
         set_win_action_enabled ("archive", any_archive);
-        set_win_action_enabled ("delete", has_message || thread_n > 1);
+        set_win_action_enabled ("delete", (has_message || thread_n > 1) && !focus_in_text_input ());
         set_win_action_enabled ("mark-unread", has_message && !outgoing && !outbox && message.seen);
         set_win_action_enabled ("mark-read", has_message && !outgoing && !outbox && !message.seen);
         set_win_action_enabled ("bookmark", has_message && !message.is_placeholder && !outbox);
@@ -8200,6 +8201,16 @@ public class Mail.Window : Adw.ApplicationWindow {
         this.message_reader?.set_outgoing (outgoing, draft);
         this.message_reader?.set_bookmarked (bookmarked);
         this.message_reader?.set_important (important_visible, important);
+    }
+
+    /* Delete is a window accelerator. While a text field has the cursor it
+     * must edit that field; a disabled action lets the key through. */
+    private bool focus_in_text_input () {
+        for (Gtk.Widget? widget = this.focus_widget; widget != null; widget = widget.parent) {
+            if (widget is Gtk.Editable || widget is Gtk.TextView)
+                return true;
+        }
+        return false;
     }
 
     private void set_win_action_enabled (string name, bool enabled) {
