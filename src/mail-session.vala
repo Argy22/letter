@@ -2443,8 +2443,136 @@ public class Mail.MailSession : Camel.Session {
         return content;
     }
 
+    private static bool placeholder_uid (string uid) {
+        return uid.has_prefix ("local-sent-") || uid.has_prefix ("local-draft-");
+    }
+
+    /* A just-sent message has no Graph id yet. Keep the MIME we already built
+     * so opening it does not ask the server for local-sent-*. */
+    private void save_local_mime (Account account, string uid, Camel.MimeMessage mime) {
+        if (!placeholder_uid (uid))
+            return;
+        var path = local_mime_path (account, uid);
+        try {
+            DirUtils.create_with_parents (Path.get_dirname (path), 0700);
+            var file = File.new_for_path (path);
+            var io = file.replace_readwrite (null, false, FileCreateFlags.PRIVATE, null);
+            mime.write_to_stream_sync (new Camel.Stream (io), null);
+            io.close (null);
+        } catch (Error e) {
+            warning ("Could not keep local message copy: %s", e.message);
+        }
+    }
+
+    private Camel.MimeMessage? load_saved_local_mime (Account account, string uid) {
+        if (!placeholder_uid (uid))
+            return null;
+        var path = local_mime_path (account, uid);
+        if (!FileUtils.test (path, FileTest.IS_REGULAR))
+            return null;
+        try {
+            var file = File.new_for_path (path);
+            var io = file.open_readwrite (null);
+            var mime = new Camel.MimeMessage ();
+            if (!mime.construct_from_stream_sync (new Camel.Stream (io), null)) {
+                io.close (null);
+                return null;
+            }
+            io.close (null);
+            Utils.sync_log ("open body uid=%s from saved local copy".printf (uid));
+            return mime;
+        } catch (Error e) {
+            warning ("Could not read local message copy: %s", e.message);
+            return null;
+        }
+    }
+
+    private static string local_mime_path (Account account, string uid) {
+        var safe = uid.replace ("/", "_");
+        return Path.build_filename (
+            mail_data_root (),
+            "local-mime",
+            account.source_uid ?? account.uid,
+            safe
+        );
+    }
+
+    /* Archive/move stays local until the next flush. The MIME is still in the
+     * folder it left. A fake sent id is the file written at send time. */
+    private async Camel.MimeMessage? mime_kept_locally (
+        Account account,
+        string skip_full_name,
+        string uid
+    ) {
+        var account_key = account.source_uid ?? account.uid;
+        Camel.MimeMessage? found = null;
+        this.folder_watches.foreach ((key, watch) => {
+            if (found != null || watch.camel_folder == null)
+                return;
+            if (watch.account_key != account_key || watch.folder_name == skip_full_name)
+                return;
+            var mime = message_from_local_cache (watch.camel_folder, uid);
+            if (mime == null)
+                return;
+            Utils.sync_log ("open body uid=%s kept in “%s”".printf (uid, watch.folder_name));
+            found = mime;
+        });
+        if (found != null)
+            return found;
+
+        found = load_saved_local_mime (account, uid);
+        if (found != null)
+            return found;
+
+        var sources = new GenericArray<Folder> ();
+        if (this.transfer_flush_current != null)
+            add_move_source (sources, this.transfer_flush_current, account_key, skip_full_name, uid);
+        for (uint i = 0; i < this.transfer_flush_queue.length; i++)
+            add_move_source (sources, this.transfer_flush_queue[i], account_key, skip_full_name, uid);
+        for (uint i = 0; i < sources.length; i++) {
+            try {
+                var camel_folder = yield open_camel_folder (account, sources[i], null);
+                found = message_from_local_cache (camel_folder, uid);
+                if (found == null)
+                    continue;
+                Utils.sync_log ("open body uid=%s kept in “%s”".printf (uid, sources[i].name));
+                return found;
+            } catch (Error e) {
+            }
+        }
+        return null;
+    }
+
+    private static void add_move_source (
+        GenericArray<Folder> sources,
+        TransferFlushJob job,
+        string account_key,
+        string skip_full_name,
+        string uid
+    ) {
+        if ((job.account.source_uid ?? job.account.uid) != account_key)
+            return;
+        if (job.from.full_name == skip_full_name)
+            return;
+        var has = false;
+        for (uint i = 0; i < job.uids.length; i++) {
+            if (job.uids[i] == uid) {
+                has = true;
+                break;
+            }
+        }
+        if (!has)
+            return;
+        for (uint i = 0; i < sources.length; i++) {
+            if (sources[i].full_name == job.from.full_name)
+                return;
+        }
+        sources.add (job.from);
+    }
+
     /* Disk Camel cache only — no Graph, no enter_camel. Safe during an align
-     * slice so open-body does not wait when the message is already on disk. */
+     * slice so open-body does not wait when the message is already on disk.
+     * A body still sitting in the folder it was moved from counts as disk. */
     public async MessageContent? try_load_body_from_disk (
         Account account,
         Folder folder,
@@ -2464,8 +2592,11 @@ public class Mail.MailSession : Camel.Session {
             return null;
         var mime = message_from_local_cache (camel_folder, uid);
         if (mime == null)
+            mime = yield mime_kept_locally (account, folder.full_name, uid);
+        if (mime == null)
             return null;
         if (MessageContent.mime_body_incomplete (mime)
+            && !placeholder_uid (uid)
             && NetworkMonitor.get_default ().network_available) {
             /* The open path downloads this once. Do not pin the cut-off copy.
              * Offline, keep the partial file: a failed fetch would replace it. */
@@ -2532,8 +2663,12 @@ public class Mail.MailSession : Camel.Session {
 
         var camel_folder = yield open_camel_folder (account, folder, null);
         var mime = message_from_local_cache (camel_folder, uid);
+        var from_this_folder = mime != null;
+        if (mime == null)
+            mime = yield mime_kept_locally (account, folder.full_name, uid);
         Camel.MimeMessage? stale = null;
-        if (mime != null && MessageContent.mime_body_incomplete (mime)
+        if (from_this_folder && mime != null && MessageContent.mime_body_incomplete (mime)
+            && !placeholder_uid (uid)
             && NetworkMonitor.get_default ().network_available
             && !this.body_reload_tried.contains (key)) {
             this.body_reload_tried.set (key, 1);
@@ -2557,7 +2692,7 @@ public class Mail.MailSession : Camel.Session {
         } else if (mime != null) {
             Utils.sync_log ("open body “%s” uid=%s from disk".printf (folder.name, uid));
         }
-        if (mime == null) {
+        if (mime == null && !placeholder_uid (uid)) {
             Utils.sync_log ("open body “%s” uid=%s from server".printf (folder.name, uid));
             try {
                 mime = yield fetch_camel_message (camel_folder, uid, Priority.DEFAULT, cancellable);
@@ -2570,6 +2705,8 @@ public class Mail.MailSession : Camel.Session {
                     )
                 );
                 mime = stale ?? message_from_local_cache (camel_folder, uid);
+                if (mime == null)
+                    mime = yield mime_kept_locally (account, folder.full_name, uid);
                 if (mime == null) {
                     if (is_missing_on_server (e)) {
                         throw new IOError.NOT_FOUND (
@@ -2582,7 +2719,9 @@ public class Mail.MailSession : Camel.Session {
         }
         if (mime == null) {
             throw new IOError.NOT_FOUND (
-                _("Message could not be opened.")
+                placeholder_uid (uid)
+                    ? _("This message is still syncing with the server. Try again in a moment.")
+                    : _("Message could not be opened.")
             );
         }
 
@@ -6183,6 +6322,7 @@ public class Mail.MailSession : Camel.Session {
                 ? uid
                 : "local-sent-%lld".printf (new DateTime.now_utc ().to_unix ());
             var content = MessageContent.from_mime (id, mime);
+            save_local_mime (account, id, mime);
             remember_body_cache (body_key (account, sent_folder, id), content);
             sent = message_from_mime (id, mime, sent_folder, content.plain_text ?? body);
         }
@@ -6238,6 +6378,7 @@ public class Mail.MailSession : Camel.Session {
         if (uid == null || uid.length == 0)
             uid = "local-draft-%lld".printf (new DateTime.now_utc ().to_unix ());
         var content = MessageContent.from_mime (uid, mime);
+        save_local_mime (account, uid, mime);
         remember_body_cache (body_key (account, drafts, uid), content);
         var draft = message_from_mime (uid, mime, drafts, content.plain_text ?? body);
 

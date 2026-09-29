@@ -805,31 +805,53 @@ html { color-scheme: only light; }
 
     private bool on_context_menu (WebKit.ContextMenu menu, WebKit.HitTestResult hit) {
         this.context_image_uri = null;
-        if (!hit.context_is_image ())
-            return false;
-
-        var uri = hit.get_image_uri ();
-        if (uri != null && uri.length > 0)
-            this.context_image_uri = uri;
-
+        /* The body is load_html() on about:blank. Reload replaces it with that
+         * empty page. Back, forward and stop are the same browser chrome. */
         var insert_at = 0;
         for (int i = (int) menu.get_n_items () - 1; i >= 0; i--) {
             var item = menu.get_item_at_position (i);
             var action = item.get_stock_action ();
-            if (action == WebKit.ContextMenuAction.OPEN_IMAGE_IN_NEW_WINDOW
-                || action == WebKit.ContextMenuAction.OPEN_FRAME_IN_NEW_WINDOW) {
-                insert_at = i;
+            if (action == WebKit.ContextMenuAction.RELOAD
+                || action == WebKit.ContextMenuAction.GO_BACK
+                || action == WebKit.ContextMenuAction.GO_FORWARD
+                || action == WebKit.ContextMenuAction.STOP
+                || action == WebKit.ContextMenuAction.OPEN_IMAGE_IN_NEW_WINDOW
+                || action == WebKit.ContextMenuAction.OPEN_FRAME_IN_NEW_WINDOW
+                || action == WebKit.ContextMenuAction.OPEN_LINK_IN_NEW_WINDOW) {
+                if (action == WebKit.ContextMenuAction.OPEN_IMAGE_IN_NEW_WINDOW
+                    || action == WebKit.ContextMenuAction.OPEN_FRAME_IN_NEW_WINDOW)
+                    insert_at = i;
                 menu.remove (item);
             }
         }
+        trim_context_separators (menu);
 
+        if (hit.context_is_image ()) {
+            var uri = hit.get_image_uri ();
+            if (uri != null && uri.length > 0)
+                this.context_image_uri = uri;
+        }
         if (this.context_image_uri != null) {
             menu.insert (
                 new WebKit.ContextMenuItem.from_gaction (this.view_image_action, _("View Image"), null),
-                insert_at
+                insert_at.clamp (0, (int) menu.get_n_items ())
             );
         }
-        return false;
+        return menu.get_n_items () == 0;
+    }
+
+    private static void trim_context_separators (WebKit.ContextMenu menu) {
+        var previous_separator = true;
+        for (int i = 0; i < (int) menu.get_n_items ();) {
+            var item = menu.get_item_at_position (i);
+            var separator = item.is_separator ();
+            if (separator && (previous_separator || i == (int) menu.get_n_items () - 1)) {
+                menu.remove (item);
+                continue;
+            }
+            previous_separator = separator;
+            i++;
+        }
     }
 
     private async void view_context_image () {
