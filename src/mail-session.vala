@@ -4441,7 +4441,7 @@ public class Mail.MailSession : Camel.Session {
                 )
             );
             throw new IOError.FAILED (
-                _("Junk was emptied into Trash on the server, but permanent delete could not finish. Open Trash (or Update Folder) to align the local list.")
+                _("Messages moved to Trash.")
             );
         }
 

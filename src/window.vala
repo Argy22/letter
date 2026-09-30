@@ -177,6 +177,8 @@ public class Mail.Window : Adw.ApplicationWindow {
     private bool unread_only;
     private bool conversation_view;
     private uint conversation_index_source;
+    private uint message_action_refresh_source;
+    private bool updating_message_actions;
     private uint mark_seen_source;
     /* Thousands missing — not Online Archive ±noise. */
     private const int LARGE_HEADER_GAP = 500;
@@ -193,6 +195,18 @@ public class Mail.Window : Adw.ApplicationWindow {
     private bool search_deeper_consumed;
     private const int SEARCH_LIMIT = 400;
     private uint display_messages_generation;
+    /* A large conversation list is already on screen. Regroup in the
+     * background and splice the model; do not cover the rows with the
+     * grouping spinner. */
+    private bool conversation_grouping;
+    private bool conversation_grouping_dirty;
+    private bool conversation_apply_quiet;
+    private string? conversation_grouping_folder;
+    private int64 conversation_regroup_not_before;
+    private const int64 CONVERSATION_REGROUP_GAP_US = 4 * 1000 * 1000;
+    /* Last threaded list for a folder, kept for this session so a click can
+     * paint it at once. Not written to disk. */
+    private HashTable<string, GenericArray<Conversation>> grouped_list_cache;
 
     private const ActionEntry[] WINDOW_ACTIONS = {
         { "toggle-sidebar", on_toggle_sidebar },
@@ -274,6 +288,7 @@ public class Mail.Window : Adw.ApplicationWindow {
         this.folder_spinner = new Adw.SpinnerPaintable (this.no_folders_page);
         this.conversation_spinner = new Adw.SpinnerPaintable (this.conversation_page);
         this.message_cache = new HashTable<string, GenericArray<Message>> (str_hash, str_equal);
+        this.grouped_list_cache = new HashTable<string, GenericArray<Conversation>> (str_hash, str_equal);
         this.message_cache_touched = new HashTable<string, int64?> (str_hash, str_equal);
         this.header_cache_save_sources = new HashTable<string, uint> (str_hash, str_equal);
         this.folder_tree_cache = new HashTable<string, GenericArray<Folder>> (str_hash, str_equal);
@@ -719,6 +734,7 @@ public class Mail.Window : Adw.ApplicationWindow {
         for (uint i = 0; i < message_keys.length; i++) {
             this.message_cache.remove (message_keys[i]);
             this.message_cache_touched.remove (message_keys[i]);
+            this.grouped_list_cache.remove (message_keys[i]);
         }
 
         var hidden_keys = new GenericArray<string> ();
@@ -802,6 +818,15 @@ public class Mail.Window : Adw.ApplicationWindow {
 
     private bool is_showing_list () {
         return this.list_bin.child == this.list_pane && this.list_body.child == this.message_scrolled;
+    }
+
+    /* Rows already painted for this folder. Leftover rows from the folder
+     * the user just left do not count. */
+    private bool showing_this_folder (Folder folder) {
+        if (!is_showing_list () || this.message_store.n_items == 0)
+            return false;
+        var first = this.message_store.get_item (0) as Conversation;
+        return first != null && first.list_folder == folder.full_name;
     }
 
     private bool is_searching {
@@ -1629,12 +1654,58 @@ public class Mail.Window : Adw.ApplicationWindow {
         if (!this.conversation_view || this.search_text.length > 0 || this.selected_folder == null)
             return;
 
+        var folder = this.selected_folder;
+        if (showing_this_folder (folder) && open_folder_list_is_large ()) {
+            if (this.conversation_grouping
+                && this.conversation_grouping_folder == folder.full_name) {
+                this.conversation_grouping_dirty = true;
+                return;
+            }
+            schedule_quiet_regroup ();
+            return;
+        }
+
         if (this.conversation_index_source != 0)
             Source.remove (this.conversation_index_source);
 
         this.conversation_index_source = Timeout.add (200, () => {
             this.conversation_index_source = 0;
             redisplay_current_list ();
+            return Source.REMOVE;
+        });
+    }
+
+    private bool open_folder_list_is_large () {
+        var account = this.selected_account;
+        var folder = this.selected_folder;
+        if (account == null || folder == null)
+            return false;
+        var cache = this.message_cache.get (message_cache_key (account, folder));
+        return cache != null && cache.length >= MailSession.HEADER_LIST_LARGE;
+    }
+
+    /* One regroup of a list that is already showing. Further header slices
+     * wait for this one; the next runs at most a few seconds later and reads
+     * the latest cache. */
+    private void schedule_quiet_regroup () {
+        if (this.conversation_index_source != 0)
+            return;
+
+        var now = get_monotonic_time ();
+        var wait_us = this.conversation_regroup_not_before - now;
+        if (wait_us < 200 * 1000)
+            wait_us = 200 * 1000;
+        var ms = (uint) (wait_us / 1000);
+        if (ms < 200)
+            ms = 200;
+        if (ms > 4000)
+            ms = 4000;
+
+        this.conversation_index_source = Timeout.add (ms, () => {
+            this.conversation_index_source = 0;
+            this.conversation_apply_quiet = true;
+            redisplay_current_list ();
+            this.conversation_apply_quiet = false;
             return Source.REMOVE;
         });
     }
@@ -4418,6 +4489,7 @@ public class Mail.Window : Adw.ApplicationWindow {
         var messages = this.message_cache.get (key);
         this.message_cache.remove (key);
         this.message_cache_touched.remove (key);
+        this.grouped_list_cache.remove (key);
         Utils.sync_log (
             "message-cache drop after align “%s” (%u headers → disk)".printf (
                 folder.name,
@@ -4467,6 +4539,7 @@ public class Mail.Window : Adw.ApplicationWindow {
                 folder_bytes += estimate_message_bytes (messages[j]);
             this.message_cache.remove (key);
             this.message_cache_touched.remove (key);
+            this.grouped_list_cache.remove (key);
             used = used > folder_bytes ? used - folder_bytes : 0;
             evicted++;
             msgs += messages.length;
@@ -5119,9 +5192,24 @@ public class Mail.Window : Adw.ApplicationWindow {
 
         if (this.conversation_view) {
             /* Always group when conversation-view is on — including Archive.
-             * Large lists run async with Idle yields so the UI stays responsive. */
+             * Large lists run async with Idle yields so the UI stays responsive.
+             * A list already showing this folder is updated in place. */
             if (stored.length >= MailSession.HEADER_LIST_LARGE) {
+                if (this.conversation_grouping
+                    && this.conversation_grouping_folder == folder.full_name) {
+                    this.conversation_grouping_dirty = true;
+                    return;
+                }
+                if (showing_this_folder (folder) && !this.conversation_apply_quiet) {
+                    schedule_quiet_regroup ();
+                    return;
+                }
+                /* Click lands on rows at once. Threading then updates the model. */
+                if (!showing_this_folder (folder))
+                    show_known_folder_list (account, folder, stored);
                 var gen = ++this.display_messages_generation;
+                this.conversation_regroup_not_before =
+                    get_monotonic_time () + CONVERSATION_REGROUP_GAP_US;
                 display_messages_grouped.begin (account, folder, stored, gen);
                 return;
             }
@@ -5129,11 +5217,42 @@ public class Mail.Window : Adw.ApplicationWindow {
                 stored,
                 extra_thread_messages (account, folder)
             );
-            finish_display_conversations (folder, stored, conversations);
+            finish_display_conversations (
+                folder, stored, conversations, showing_this_folder (folder), true
+            );
             return;
         }
 
         finish_display_conversations (folder, stored, Conversation.as_singles (stored));
+    }
+
+    /* Paint this folder before threading finishes. A list already built in
+     * this session comes back as threads; otherwise the messages themselves. */
+    private void show_known_folder_list (
+        Account account,
+        Folder folder,
+        GenericArray<Message> stored
+    ) {
+        var remembered = this.grouped_list_cache.get (message_cache_key (account, folder));
+        if (remembered != null && remembered.length > 0) {
+            finish_display_conversations (folder, stored, remembered);
+        } else {
+            finish_display_conversations (folder, stored, Conversation.as_singles (stored));
+        }
+        restore_list_scroll (0);
+    }
+
+    private void remember_grouped_list (
+        Folder folder,
+        GenericArray<Conversation> conversations
+    ) {
+        var account = this.selected_account;
+        if (account == null || conversations.length == 0)
+            return;
+        this.grouped_list_cache.set (
+            message_cache_key (account, folder),
+            conversations
+        );
     }
 
     private async void display_messages_grouped (
@@ -5147,40 +5266,55 @@ public class Mail.Window : Adw.ApplicationWindow {
         if (!is_current_folder (folder) || this.search_text.length > 0)
             return;
 
-        show_conversation_loading (
-            _("Grouping Conversations"),
-            _("Building threads for “%s”…").printf (folder.name)
-        );
+        var keep_scroll = showing_this_folder (folder);
 
-        Idle.add (display_messages_grouped.callback);
-        yield;
-        if (generation != this.display_messages_generation
-            || !is_current_folder (folder)
-            || this.search_text.length > 0)
-            return;
+        this.conversation_grouping = true;
+        this.conversation_grouping_folder = folder.full_name;
+        try {
+            Idle.add (display_messages_grouped.callback);
+            yield;
+            if (generation != this.display_messages_generation
+                || !is_current_folder (folder)
+                || this.search_text.length > 0)
+                return;
 
-        var extras = extra_thread_messages (account, folder);
-        Idle.add (display_messages_grouped.callback);
-        yield;
-        if (generation != this.display_messages_generation
-            || !is_current_folder (folder)
-            || this.search_text.length > 0)
-            return;
+            var extras = extra_thread_messages (account, folder);
+            Idle.add (display_messages_grouped.callback);
+            yield;
+            if (generation != this.display_messages_generation
+                || !is_current_folder (folder)
+                || this.search_text.length > 0)
+                return;
 
-        var conversations = yield Conversation.group_async (stored, extras);
-        if (generation != this.display_messages_generation
-            || !is_current_folder (folder)
-            || this.search_text.length > 0)
-            return;
+            var conversations = yield Conversation.group_async (stored, extras);
+            if (generation != this.display_messages_generation
+                || !is_current_folder (folder)
+                || this.search_text.length > 0)
+                return;
 
-        finish_display_conversations (folder, stored, conversations);
+            finish_display_conversations (folder, stored, conversations, keep_scroll, true);
+        } finally {
+            if (generation == this.display_messages_generation) {
+                this.conversation_grouping = false;
+                if (!is_current_folder (folder) || this.search_text.length > 0) {
+                    this.conversation_grouping_dirty = false;
+                } else if (this.conversation_grouping_dirty) {
+                    this.conversation_grouping_dirty = false;
+                    schedule_quiet_regroup ();
+                }
+            }
+        }
     }
 
     private void finish_display_conversations (
         Folder folder,
         GenericArray<Message> stored,
-        GenericArray<Conversation> conversations
+        GenericArray<Conversation> conversations,
+        bool keep_scroll = false,
+        bool remember = false
     ) {
+        if (remember)
+            remember_grouped_list (folder, conversations);
         var listed = listed_conversations (conversations);
         refresh_folder_badge (folder);
         update_folder_heading (folder, listed.length);
@@ -5213,14 +5347,14 @@ public class Mail.Window : Adw.ApplicationWindow {
                             _("Turn off the unread filter to see the rest of this folder.")
                         );
                     } else {
-                        show_conversation_list (still);
+                        show_conversation_list (still, keep_scroll);
                     }
                 }
             }
             return;
         }
 
-        show_conversation_list (listed);
+        show_conversation_list (listed, keep_scroll);
     }
 
     private bool same_conversation_ids (GenericArray<Conversation> conversations) {
@@ -5408,7 +5542,11 @@ public class Mail.Window : Adw.ApplicationWindow {
             notify_new_arrivals (account, folder, cache, known);
     }
 
-    private void show_conversation_list (GenericArray<Conversation> conversations) {
+    private void show_conversation_list (
+        GenericArray<Conversation> conversations,
+        bool keep_scroll = false
+    ) {
+        var scroll_y = keep_scroll ? this.message_scrolled.vadjustment.value : 0;
         var keep_uid = this.open_message_uid;
         var keep_folder = this.open_message != null ? this.open_message.folder_full_name : null;
         var items = new Object[conversations.length];
@@ -5432,6 +5570,19 @@ public class Mail.Window : Adw.ApplicationWindow {
 
         if (match != Gtk.INVALID_LIST_POSITION)
             on_message_selection_changed ();
+        if (keep_scroll)
+            restore_list_scroll (scroll_y);
+    }
+
+    private void restore_list_scroll (double y) {
+        Idle.add (() => {
+            var adj = this.message_scrolled.vadjustment;
+            var max = adj.upper - adj.page_size;
+            if (max < adj.lower)
+                max = adj.lower;
+            adj.value = y.clamp (adj.lower, max);
+            return Source.REMOVE;
+        });
     }
 
     private void on_message_item_setup (Object object) {
@@ -6877,7 +7028,10 @@ public class Mail.Window : Adw.ApplicationWindow {
         }
         this.open_conversation?.refresh ();
         refresh_folder_badge (folder);
-        update_message_actions ();
+        /* The seen button is the widget that activated this action. Updating
+         * its enabled state here walks GTK's watcher list mid-click and
+         * crashes. Refresh the buttons once the activation has returned. */
+        schedule_message_action_refresh ();
 
         try {
             yield this.mail_session.set_message_seen (account, folder, message.uid, seen);
@@ -7273,12 +7427,11 @@ public class Mail.Window : Adw.ApplicationWindow {
 
         for (uint i = 0; i < conversations.length; i++)
             conversations[i].refresh ();
-        update_message_actions ();
+        schedule_message_action_refresh ();
 
         if (this.unread_only) {
             redisplay_current_list ();
             show_reader_empty ();
-            update_message_actions ();
         }
 
         if (changed.length == 0)
@@ -8095,6 +8248,17 @@ public class Mail.Window : Adw.ApplicationWindow {
     }
 
     private void update_message_actions () {
+        /* Disabling the button that was just clicked moves the focus, and
+         * notify::focus-widget calls back in here. A second pass changes the
+         * button's action while GTK is still walking the first pass's list. */
+        if (this.updating_message_actions)
+            return;
+        this.updating_message_actions = true;
+        update_message_actions_now ();
+        this.updating_message_actions = false;
+    }
+
+    private void update_message_actions_now () {
         var thread_n = selected_thread_count ();
         if (this.thread_action_bar != null)
             this.thread_action_bar.visible = thread_n > 1 && this.thread_revealer.reveal_child;
@@ -8211,6 +8375,16 @@ public class Mail.Window : Adw.ApplicationWindow {
                 return true;
         }
         return false;
+    }
+
+    private void schedule_message_action_refresh () {
+        if (this.message_action_refresh_source != 0)
+            return;
+        this.message_action_refresh_source = Idle.add (() => {
+            this.message_action_refresh_source = 0;
+            update_message_actions ();
+            return Source.REMOVE;
+        });
     }
 
     private void set_win_action_enabled (string name, bool enabled) {
@@ -9715,6 +9889,10 @@ public class Mail.Window : Adw.ApplicationWindow {
         if (this.conversation_index_source != 0) {
             Source.remove (this.conversation_index_source);
             this.conversation_index_source = 0;
+        }
+        if (this.message_action_refresh_source != 0) {
+            Source.remove (this.message_action_refresh_source);
+            this.message_action_refresh_source = 0;
         }
         this.idle_cancellable?.cancel ();
         this.folder_sync_pending_name = null;

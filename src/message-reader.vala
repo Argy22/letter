@@ -19,6 +19,8 @@ public class Mail.MessageReader : Gtk.Box {
     private InvitationBar invitation_bar;
     private WebKit.NetworkSession network_session;
     private WebKit.WebView? webview;
+    private ulong body_loaded_id;
+    private ulong body_failed_id;
     private Gtk.Stack stack;
     private bool load_remote_images;
     private SimpleAction view_image_action;
@@ -447,11 +449,20 @@ public class Mail.MessageReader : Gtk.Box {
     }
 
     /* Unmap and drop the current view before killing its process, so the
-     * last frame is not left on screen. */
+     * last frame is not left on screen. The load handlers capture the view,
+     * so they have to be disconnected first or the process stays alive. */
     private void retire_webview () {
         var old = this.webview;
         if (old == null)
             return;
+        if (this.body_loaded_id != 0) {
+            old.disconnect (this.body_loaded_id);
+            this.body_loaded_id = 0;
+        }
+        if (this.body_failed_id != 0) {
+            old.disconnect (this.body_failed_id);
+            this.body_failed_id = 0;
+        }
         this.webview = null;
         this.stack.visible_child_name = "loading";
         if (old.parent == this.stack)
@@ -472,16 +483,18 @@ public class Mail.MessageReader : Gtk.Box {
             this.stack.remove (previous);
         this.stack.add_named (view, "body");
         this.stack.visible_child_name = "loading";
-        ulong loaded = 0;
-        loaded = view.load_changed.connect ((event) => {
+        this.body_loaded_id = view.load_changed.connect ((event) => {
             if (epoch != this.html_epoch || this.webview != view)
                 return;
             if (event != WebKit.LoadEvent.FINISHED)
                 return;
-            view.disconnect (loaded);
+            if (this.body_loaded_id != 0) {
+                view.disconnect (this.body_loaded_id);
+                this.body_loaded_id = 0;
+            }
             this.stack.visible_child_name = "body";
         });
-        view.load_failed.connect ((event, uri, error) => {
+        this.body_failed_id = view.load_failed.connect ((event, uri, error) => {
             if (epoch != this.html_epoch || this.webview != view)
                 return false;
             this.stack.visible_child_name = "body";
@@ -1368,14 +1381,15 @@ public class Mail.MessageActionBar : Gtk.Box {
 
     public void set_seen (bool seen, bool enabled) {
         this.seen_button.sensitive = enabled;
+        var action = seen ? "win.mark-unread" : "win.mark-read";
+        if (this.seen_button.action_name != action)
+            this.seen_button.action_name = action;
         if (seen) {
             this.seen_button.icon_name = "mail-unread-symbolic";
             this.seen_button.tooltip_text = _("Mark as Unread");
-            this.seen_button.action_name = "win.mark-unread";
         } else {
             this.seen_button.icon_name = "mail-read-symbolic";
             this.seen_button.tooltip_text = _("Mark as Read");
-            this.seen_button.action_name = "win.mark-read";
         }
     }
 

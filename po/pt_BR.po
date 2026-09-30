@@ -1183,9 +1183,7 @@ msgid "Could not locate Trash folder"
 msgstr "Não foi possível localizar a pasta Lixeira"
 
 #: src/mail-session.vala:3956
-msgid ""
-"Junk was emptied into Trash on the server, but permanent delete could not "
-"finish. Open Trash (or Update Folder) to align the local list."
+msgid "Messages moved to Trash."
 msgstr ""
 
 #: src/mail-session.vala:5370

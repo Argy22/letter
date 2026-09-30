@@ -1219,13 +1219,8 @@ msgid "Could not locate Trash folder"
 msgstr "Impossibile trovare la cartella Cestino"
 
 #: src/mail-session.vala:3956
-msgid ""
-"Junk was emptied into Trash on the server, but permanent delete could not "
-"finish. Open Trash (or Update Folder) to align the local list."
-msgstr ""
-"Lo spam è stato svuotato nel Cestino sul server, ma l’eliminazione "
-"permanente non è riuscita. Apri il Cestino (o Aggiorna cartella) per "
-"allineare l’elenco locale."
+msgid "Messages moved to Trash."
+msgstr "Elementi spostati nel cestino"
 
 #: src/mail-session.vala:5370
 msgid "Enter a folder name."
