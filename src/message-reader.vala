@@ -449,6 +449,9 @@ html, body { margin: 0; height: 100%; background: #ffffff; }
             enable_html5_local_storage = false,
             enable_page_cache = false,
             enable_back_forward_navigation_gestures = false,
+            /* Each wheel notch is one paint. The animated interpolation
+             * repaints the whole visible page on every intermediate frame. */
+            enable_smooth_scrolling = false,
             auto_load_images = this.load_remote_images,
             /* One GPU surface for the life of the reader. main() pins it to
              * the GPU that drives the display. The next mail replaces the
