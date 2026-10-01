@@ -5,6 +5,9 @@ public class Mail.MessageReader : Gtk.Box {
     private const double ZOOM_MIN = 0.5;
     private const double ZOOM_MAX = 3.0;
     private const double ZOOM_STEP = 1.1;
+    /* White cover over the previous mail until the next one has painted.
+     * Off while we see whether the GPU texture is enough on its own. */
+    private const bool READER_WHITE_VEIL = false;
 
     private Settings settings;
     private Gtk.Label subject_label;
@@ -17,12 +20,38 @@ public class Mail.MessageReader : Gtk.Box {
     private Gtk.Box priority_badge;
     private Adw.Banner trust_banner;
     private InvitationBar invitation_bar;
+    private const string BLANK_HTML = """
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+html, body { margin: 0; height: 100%; background: #ffffff; }
+</style></head><body></body></html>
+""";
+    /* Drawn inside the living surface. A GTK spinner would sit under the
+     * GPU plane and could not cover it. */
+    private const string WAITING_HTML = """
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+html, body { margin: 0; height: 100%; background: #ffffff; }
+.spin {
+  width: 28px; height: 28px; box-sizing: border-box;
+  border: 2.5px solid rgba(34, 34, 34, 0.14);
+  border-top-color: rgba(34, 34, 34, 0.55);
+  border-radius: 50%;
+  position: absolute; left: 50%; top: 38%; margin-left: -14px;
+  animation: letter-spin 0.7s linear infinite;
+}
+@keyframes letter-spin { to { transform: rotate(360deg); } }
+</style></head><body><div class="spin"></div></body></html>
+""";
+
     private WebKit.NetworkSession network_session;
     private WebKit.WebView? webview;
     private ulong body_loaded_id;
     private ulong body_failed_id;
-    private Gtk.Stack stack;
     private bool load_remote_images;
+    private bool document_ready;
+    private bool expect_document;
+    private Gtk.Box white_cover;
+    private uint cover_epoch;
+    private bool reader_gone;
     private SimpleAction view_image_action;
     private string? context_image_uri;
     private MessageContent? current;
@@ -162,38 +191,38 @@ public class Mail.MessageReader : Gtk.Box {
         this.view_image_action = new SimpleAction ("view-image", null);
         this.view_image_action.activate.connect (() => view_context_image.begin ());
         this.network_session = new WebKit.NetworkSession.ephemeral ();
-
-        var placeholder = new Gtk.Box (Gtk.Orientation.VERTICAL, 0) {
-            hexpand = true,
-            vexpand = true,
-        };
-        placeholder.add_css_class ("message-body-placeholder");
-        placeholder.append (new Adw.Spinner () {
-            halign = Gtk.Align.CENTER,
-            valign = Gtk.Align.CENTER,
-            hexpand = true,
-            vexpand = true,
-            width_request = 32,
-            height_request = 32,
+        this.webview = create_reader_view ();
+        this.white_cover = new Gtk.Box (Gtk.Orientation.VERTICAL, 0) {
             can_target = false,
-        });
-
-        this.stack = new Gtk.Stack () {
+            visible = false,
             hexpand = true,
             vexpand = true,
-            transition_type = Gtk.StackTransitionType.NONE,
-            margin_start = 20,
-            margin_end = 20,
-            margin_top = 12,
-            margin_bottom = 16,
+            halign = Gtk.Align.FILL,
+            valign = Gtk.Align.FILL,
         };
-        this.stack.add_css_class ("message-body-stack");
-        this.stack.add_named (placeholder, "loading");
-        this.stack.visible_child_name = "loading";
-        append (this.stack);
+        this.white_cover.add_css_class ("message-body-placeholder");
+        var overlay = new Gtk.Overlay () {
+            hexpand = true,
+            vexpand = true,
+        };
+        overlay.child = this.webview;
+        overlay.add_overlay (this.white_cover);
+        append (overlay);
+        load_reader_html (BLANK_HTML, false);
+    }
+
+    /* Covers the previous mail immediately. The web view stays mapped;
+     * the next paint is white, and the new document is drawn underneath. */
+    public void hold_white () {
+        if (!READER_WHITE_VEIL || this.reader_gone)
+            return;
+        this.cover_epoch++;
+        this.white_cover.visible = true;
     }
 
     public override void dispose () {
+        this.reader_gone = true;
+        this.cover_epoch++;
         retire_webview ();
         base.dispose ();
     }
@@ -289,7 +318,7 @@ public class Mail.MessageReader : Gtk.Box {
     }
 
     public void print (Gtk.Window? parent) {
-        if (this.current == null || this.webview == null || this.stack.visible_child_name != "body")
+        if (this.current == null || this.webview == null || !this.document_ready)
             return;
 
         var operation = new WebKit.PrintOperation (this.webview);
@@ -315,8 +344,7 @@ public class Mail.MessageReader : Gtk.Box {
             this.from_label.label = "";
             this.date_label.label = "";
         }
-        retire_webview ();
-        this.stack.visible_child_name = "loading";
+        load_reader_html (message != null ? WAITING_HTML : BLANK_HTML, false);
     }
 
     public void show_content (MessageContent content, bool outgoing = false) {
@@ -333,11 +361,11 @@ public class Mail.MessageReader : Gtk.Box {
             && Utils.mailbox_uses_org_trust (this.mailbox)
             && this.contacts != null;
         var needs_trust = content.has_remote_images && !trusted && !check_book;
-        var same_body = this.webview != null
+        var same_body = this.document_ready
             && this.current != null
             && this.current.uid == content.uid
-            && this.stack.visible_child_name == "body"
             && this.trust_banner.revealed == needs_trust
+            && this.webview != null
             && this.webview.get_settings ().auto_load_images == (trusted || !content.has_remote_images);
 
         this.current = content;
@@ -358,8 +386,6 @@ public class Mail.MessageReader : Gtk.Box {
         this.invitation_bar.bind (content.invitation);
         if (!same_body)
             load_body_html (content.html);
-        else
-            this.stack.visible_child_name = "body";
         if (check_book)
             resolve_book_trust.begin (content, sender, epoch);
     }
@@ -422,17 +448,22 @@ public class Mail.MessageReader : Gtk.Box {
             enable_html5_database = false,
             enable_html5_local_storage = false,
             enable_page_cache = false,
+            enable_back_forward_navigation_gestures = false,
             auto_load_images = this.load_remote_images,
-            /* Mail HTML does not need a GPU surface. Accelerated WebKit
-             * punches through GTK, and killing that surface on screen flashes
-             * black. Software paint starts from the white background. */
-            hardware_acceleration_policy = WebKit.HardwareAccelerationPolicy.NEVER,
+            /* One GPU surface for the life of the reader. main() pins it to
+             * the GPU that drives the display. The next mail replaces the
+             * document; tearing this surface down is what flashes black. */
+            hardware_acceleration_policy = WebKit.HardwareAccelerationPolicy.ALWAYS,
         };
         var view = (WebKit.WebView) Object.new (typeof (WebKit.WebView),
             "network-session", this.network_session,
             "settings", settings,
             "hexpand", true,
-            "vexpand", true
+            "vexpand", true,
+            "margin-start", 20,
+            "margin-end", 20,
+            "margin-top", 12,
+            "margin-bottom", 16
         );
         view.add_css_class ("message-body");
         view.decide_policy.connect (on_decide_policy);
@@ -448,65 +479,89 @@ public class Mail.MessageReader : Gtk.Box {
         return view;
     }
 
-    /* Unmap and drop the current view before killing its process, so the
-     * last frame is not left on screen. The load handlers capture the view,
-     * so they have to be disconnected first or the process stays alive. */
+    /* Only when the reader itself goes away. Between messages the same
+     * view stays mapped and load_html() replaces the document. */
     private void retire_webview () {
         var old = this.webview;
         if (old == null)
             return;
-        if (this.body_loaded_id != 0) {
-            old.disconnect (this.body_loaded_id);
-            this.body_loaded_id = 0;
-        }
-        if (this.body_failed_id != 0) {
-            old.disconnect (this.body_failed_id);
-            this.body_failed_id = 0;
-        }
+        disconnect_body_handlers (old);
         this.webview = null;
-        this.stack.visible_child_name = "loading";
-        if (old.parent == this.stack)
-            this.stack.remove (old);
-        else if (old.parent != null)
+        this.document_ready = false;
+        if (old.parent != null)
             old.unparent ();
         old.terminate_web_process ();
     }
 
+    private void disconnect_body_handlers (WebKit.WebView view) {
+        if (this.body_loaded_id != 0) {
+            view.disconnect (this.body_loaded_id);
+            this.body_loaded_id = 0;
+        }
+        if (this.body_failed_id != 0) {
+            view.disconnect (this.body_failed_id);
+            this.body_failed_id = 0;
+        }
+    }
+
     private void load_body_html (string html) {
+        load_reader_html (html_with_print_chrome (this.current, html), true);
+    }
+
+    /* becomes_ready: a real message (or its error page). The waiting page
+     * stays unreadable so Print does not catch the spinner. */
+    private void load_reader_html (string html, bool becomes_ready) {
+        var view = this.webview;
+        if (view == null)
+            return;
+
+        if (becomes_ready && this.document_ready)
+            hold_white ();
+
+        disconnect_body_handlers (view);
         this.html_epoch++;
         var epoch = this.html_epoch;
-        retire_webview ();
-        var view = create_reader_view ();
-        this.webview = view;
-        var previous = this.stack.get_child_by_name ("body");
-        if (previous != null)
-            this.stack.remove (previous);
-        this.stack.add_named (view, "body");
-        this.stack.visible_child_name = "loading";
+        var cover = this.cover_epoch;
+        this.expect_document = becomes_ready;
+        this.document_ready = false;
         this.body_loaded_id = view.load_changed.connect ((event) => {
-            if (epoch != this.html_epoch || this.webview != view)
-                return;
-            if (event != WebKit.LoadEvent.FINISHED)
+            if (epoch != this.html_epoch || event != WebKit.LoadEvent.FINISHED)
                 return;
             if (this.body_loaded_id != 0) {
                 view.disconnect (this.body_loaded_id);
                 this.body_loaded_id = 0;
             }
-            this.stack.visible_child_name = "body";
+            if (this.expect_document)
+                this.document_ready = true;
+            release_white_after_paint (cover, epoch);
         });
         this.body_failed_id = view.load_failed.connect ((event, uri, error) => {
-            if (epoch != this.html_epoch || this.webview != view)
+            if (epoch != this.html_epoch)
                 return false;
-            this.stack.visible_child_name = "body";
+            if (error.matches (WebKit.NetworkError.quark (), WebKit.NetworkError.CANCELLED))
+                return false;
+            if (this.expect_document)
+                this.document_ready = true;
+            release_white_after_paint (cover, epoch);
             return false;
         });
         view.load_html (
-            "%s\n<!-- mail-reload %u -->".printf (
-                html_with_print_chrome (this.current, html),
-                epoch
-            ),
+            "%s\n<!-- mail-reload %u -->".printf (html, epoch),
             "about:blank"
         );
+    }
+
+    /* Drop the cover on the frame after the new document has loaded, so
+     * the paint that reveals the view is already the new mail. */
+    private void release_white_after_paint (uint cover, uint epoch) {
+        if (!READER_WHITE_VEIL)
+            return;
+        add_tick_callback (() => {
+            if (this.reader_gone || cover != this.cover_epoch || epoch != this.html_epoch)
+                return false;
+            this.white_cover.visible = false;
+            return false;
+        });
     }
 
     private string html_with_print_chrome (MessageContent? content, string html) {

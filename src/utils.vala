@@ -34,6 +34,146 @@ namespace Mail.Utils {
         message ("[letter-sync %s] %s", stamp, text);
     }
 
+    /* Pin EGL and Vulkan to the GPU that has the connected display. A
+     * secondary NVIDIA device stays closed, so WebKit cannot render on it. */
+    public static void use_display_gpu () {
+        if (Environment.get_variable ("__EGL_VENDOR_LIBRARY_FILENAMES") != null)
+            return;
+
+        string vendor;
+        string? pci;
+        if (!display_gpu (out vendor, out pci))
+            return;
+        if (vendor.down () == "0x10de")
+            return;
+
+        var mesa = first_existing_file ({
+            "/usr/lib/x86_64-linux-gnu/GL/glvnd/egl_vendor.d/50_mesa.json",
+            "/usr/share/glvnd/egl_vendor.d/50_mesa.json",
+            "/usr/lib/x86_64-linux-gnu/GL/default/share/glvnd/egl_vendor.d/50_mesa.json",
+        });
+        if (mesa == null)
+            return;
+
+        Environment.set_variable ("__EGL_VENDOR_LIBRARY_FILENAMES", mesa, true);
+        if (pci != null && Environment.get_variable ("DRI_PRIME") == null) {
+            var prime = "pci-" + pci.replace (":", "_").replace (".", "_");
+            Environment.set_variable ("DRI_PRIME", prime, true);
+        }
+
+        string? icd_name = null;
+        var v = vendor.down ();
+        if (v == "0x8086")
+            icd_name = "intel_icd.x86_64.json";
+        else if (v == "0x1002")
+            icd_name = "radeon_icd.x86_64.json";
+        if (icd_name != null
+            && Environment.get_variable ("VK_DRIVER_FILES") == null
+            && Environment.get_variable ("VK_ICD_FILENAMES") == null) {
+            var icd = first_existing_file ({
+                "/usr/lib/x86_64-linux-gnu/GL/vulkan/icd.d/" + icd_name,
+                "/usr/share/vulkan/icd.d/" + icd_name,
+                "/usr/lib/x86_64-linux-gnu/GL/default/lib/vulkan/icd.d/" + icd_name,
+            });
+            if (icd != null)
+                Environment.set_variable ("VK_DRIVER_FILES", icd, true);
+        }
+
+        sync_log ("display GPU %s%s; rendering stays on that GPU".printf (
+            vendor,
+            pci != null ? " " + pci : ""
+        ));
+    }
+
+    private static bool display_gpu (out string vendor, out string? pci) {
+        vendor = "";
+        pci = null;
+        Dir dir;
+        try {
+            dir = Dir.open ("/sys/class/drm");
+        } catch (Error e) {
+            return false;
+        }
+
+        string? boot_vendor = null;
+        string? boot_pci = null;
+        string? any_vendor = null;
+        string? any_pci = null;
+        unowned string? name = null;
+        while ((name = dir.read_name ()) != null) {
+            var dash = name.index_of ("-");
+            if (dash <= 0)
+                continue;
+            var status = read_trimmed (Path.build_filename ("/sys/class/drm", name, "status"));
+            if (status != "connected")
+                continue;
+            var card = name.substring (0, dash);
+            var card_vendor = read_trimmed (
+                Path.build_filename ("/sys/class/drm", card, "device", "vendor")
+            );
+            if (card_vendor == null || card_vendor.length == 0)
+                continue;
+            var card_pci = pci_slot_name (card);
+            if (any_vendor == null) {
+                any_vendor = card_vendor;
+                any_pci = card_pci;
+            }
+            var boot = read_trimmed (
+                Path.build_filename ("/sys/class/drm", card, "device", "boot_vga")
+            );
+            if (boot == "1") {
+                boot_vendor = card_vendor;
+                boot_pci = card_pci;
+            }
+        }
+
+        if (boot_vendor != null) {
+            vendor = boot_vendor;
+            pci = boot_pci;
+            return true;
+        }
+        if (any_vendor != null) {
+            vendor = any_vendor;
+            pci = any_pci;
+            return true;
+        }
+        return false;
+    }
+
+    private static string? pci_slot_name (string card) {
+        try {
+            string text;
+            FileUtils.get_contents (
+                Path.build_filename ("/sys/class/drm", card, "device", "uevent"),
+                out text
+            );
+            foreach (var line in text.split ("\n")) {
+                if (line.has_prefix ("PCI_SLOT_NAME="))
+                    return line.substring ("PCI_SLOT_NAME=".length).strip ();
+            }
+        } catch (Error e) {
+        }
+        return null;
+    }
+
+    private static string? read_trimmed (string path) {
+        try {
+            string text;
+            FileUtils.get_contents (path, out text);
+            return text.strip ();
+        } catch (Error e) {
+            return null;
+        }
+    }
+
+    private static string? first_existing_file (string[] paths) {
+        foreach (var path in paths) {
+            if (FileUtils.test (path, FileTest.IS_REGULAR))
+                return path;
+        }
+        return null;
+    }
+
     public static int64 sync_tick () {
         return get_monotonic_time ();
     }

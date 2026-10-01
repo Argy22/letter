@@ -102,6 +102,8 @@ public class Mail.Window : Adw.ApplicationWindow {
     private Gtk.Box? thread_action_bar;
     private bool restoring_thread;
     private uint thread_scroll_source;
+    /* Conversation rows are built after the reader has painted white. */
+    private uint open_reader_source;
     private Cancellable? folder_cancellable;
     private Cancellable? body_cancellable;
     private Cancellable? idle_cancellable;
@@ -5853,12 +5855,25 @@ public class Mail.Window : Adw.ApplicationWindow {
         this.open_message_uid = message.uid;
         this.open_message = message;
         cancel_mark_seen ();
-        fill_thread_list (reader_conversation, message);
+        /* White first. Building the conversation list on this same turn
+         * would keep the previous mail on screen until that work returns. */
+        this.message_reader.hold_white ();
         update_message_actions ();
-        load_message_body.begin (message);
-        if (this.search_results != null && this.conversation_view
-            && reader_conversation.messages.length <= 1)
-            hydrate_search_thread.begin (message, ++this.search_thread_generation);
+        if (this.open_reader_source != 0)
+            Source.remove (this.open_reader_source);
+        this.open_reader_source = Idle.add (() => {
+            this.open_reader_source = 0;
+            if (this.open_message == null || this.open_message_uid != message.uid)
+                return false;
+            if ((this.open_message.folder_full_name ?? "") != (message.folder_full_name ?? ""))
+                return false;
+            fill_thread_list (reader_conversation, message);
+            load_message_body.begin (message);
+            if (this.search_results != null && this.conversation_view
+                && reader_conversation.messages.length <= 1)
+                hydrate_search_thread.begin (message, ++this.search_thread_generation);
+            return false;
+        }, Priority.DEFAULT_IDLE);
     }
 
     private void on_message_activated (uint position) {
@@ -6296,6 +6311,7 @@ public class Mail.Window : Adw.ApplicationWindow {
         this.open_message_uid = message.uid;
         this.open_message = message;
         cancel_mark_seen ();
+        this.message_reader.hold_white ();
         load_message_body.begin (message);
         update_message_actions ();
     }
@@ -8063,6 +8079,7 @@ public class Mail.Window : Adw.ApplicationWindow {
             return;
 
         this.open_conversation = conversation;
+        this.message_reader.hold_white ();
         fill_thread_list (conversation, next);
 
         if (this.open_message == next
@@ -9889,6 +9906,10 @@ public class Mail.Window : Adw.ApplicationWindow {
         if (this.conversation_index_source != 0) {
             Source.remove (this.conversation_index_source);
             this.conversation_index_source = 0;
+        }
+        if (this.open_reader_source != 0) {
+            Source.remove (this.open_reader_source);
+            this.open_reader_source = 0;
         }
         if (this.message_action_refresh_source != 0) {
             Source.remove (this.message_action_refresh_source);
