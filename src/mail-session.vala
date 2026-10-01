@@ -3146,6 +3146,16 @@ public class Mail.MailSession : Camel.Session {
                     n += att.data.get_size ();
             }
         }
+        if (content.inline_images != null) {
+            for (uint i = 0; i < content.inline_images.length; i++) {
+                var image = content.inline_images[i];
+                n += 48;
+                if (image.cid != null)
+                    n += image.cid.length;
+                if (image.data != null)
+                    n += image.data.get_size ();
+            }
+        }
         return n;
     }
 
@@ -7191,6 +7201,110 @@ public class Mail.Recipient : Object {
     }
 }
 
+public class Mail.InlineImage : Object {
+    public string cid { get; set; default = ""; }
+    public string mime_type { get; set; default = "application/octet-stream"; }
+    public Bytes data { get; set; }
+}
+
+/* Bytes for cid: images of messages still alive. The reader asks for each
+ * one by letterimg: after the text is already on screen. The table does not
+ * own the message: the body cache does, and a weak notify drops the page. */
+public class Mail.InlineImagePages {
+    private static HashTable<string, InlineImageSet>? pages;
+    private static uint64 next_token = 1;
+
+    /* Same origin as the reader document. about:blank cannot request these
+     * images, so the page and the pictures share this URL. */
+    public const string DOCUMENT = "letterimg://page/";
+
+    public static uint64 reserve () {
+        return next_token++;
+    }
+
+    public static void publish (MessageContent content) {
+        if (content.inline_token == 0 || content.inline_images == null)
+            return;
+        if (pages == null)
+            pages = new HashTable<string, InlineImageSet> (str_hash, str_equal);
+        var key = content.inline_token.to_string ();
+        var set = new InlineImageSet ();
+        for (uint i = 0; i < content.inline_images.length; i++)
+            set.images.add (content.inline_images[i]);
+        pages.set (key, set);
+        content.set_data ("letter-inline-pin", new InlineImagePin (key));
+    }
+
+    public static void drop (string? key) {
+        if (key == null || pages == null)
+            return;
+        pages.remove (key);
+    }
+
+    public static string uri (uint64 token, uint index) {
+        /* The closing slash keeps …/1/ from matching the start of …/16/. */
+        return "%s%s/%u/".printf (DOCUMENT, token.to_string (), index);
+    }
+
+    public static InlineImage? lookup (string? uri) {
+        uint64 token;
+        uint index;
+        if (!parse (uri, out token, out index) || pages == null)
+            return null;
+        var set = pages.get (token.to_string ());
+        if (set == null || index >= set.images.length)
+            return null;
+        return set.images[index];
+    }
+
+    private static bool parse (string? uri, out uint64 token, out uint index) {
+        token = 0;
+        index = 0;
+        if (uri == null)
+            return false;
+        var s = uri;
+        var query = s.index_of_char ('?');
+        if (query >= 0)
+            s = s.substring (0, query);
+        var hash = s.index_of_char ('#');
+        if (hash >= 0)
+            s = s.substring (0, hash);
+        if (!s.has_prefix (DOCUMENT))
+            return false;
+        var rest = s.substring (DOCUMENT.length);
+        if (rest.has_suffix ("/"))
+            rest = rest.substring (0, rest.length - 1);
+        var slash = rest.index_of_char ('/');
+        if (slash <= 0)
+            return false;
+        var token_text = rest.substring (0, slash);
+        var index_text = rest.substring (slash + 1);
+        uint64 parsed_index = 0;
+        if (!uint64.try_parse (token_text, out token) || !uint64.try_parse (index_text, out parsed_index))
+            return false;
+        if (parsed_index > uint.MAX)
+            return false;
+        index = (uint) parsed_index;
+        return true;
+    }
+}
+
+private class Mail.InlineImageSet : Object {
+    public GenericArray<InlineImage> images = new GenericArray<InlineImage> ();
+}
+
+private class Mail.InlineImagePin : Object {
+    public string key { get; private set; }
+
+    public InlineImagePin (string key) {
+        this.key = key;
+    }
+
+    ~InlineImagePin () {
+        InlineImagePages.drop (this.key);
+    }
+}
+
 public class Mail.MessageContent : Object {
     public string uid { get; set; }
     public string subject { get; set; }
@@ -7205,7 +7319,35 @@ public class Mail.MessageContent : Object {
     public int64 date { get; set; }
     public string html { get; set; }
     public string? plain_text { get; set; }
+    /* letterimg: token. Zero when this message has no inline images. */
+    public uint64 inline_token { get; set; }
+    public GenericArray<InlineImage>? inline_images { get; set; }
     public bool has_remote_images { get; set; }
+
+    /* The reader keeps letterimg: so the text can paint first. A reply still
+     * needs ordinary data: URIs, which the outgoing path turns back into parts. */
+    public string html_for_compose () {
+        var result = this.html ?? "";
+        if (this.inline_token == 0 || this.inline_images == null)
+            return result;
+        for (int i = (int) this.inline_images.length - 1; i >= 0; i--) {
+            var image = this.inline_images[i];
+            if (image == null || image.data == null)
+                continue;
+            unowned uint8[] raw = image.data.get_data ();
+            var data_uri = "data:%s;base64,%s".printf (
+                image.mime_type,
+                Base64.encode (raw)
+            );
+            var current = InlineImagePages.uri (this.inline_token, (uint) i);
+            var legacy = current.has_suffix ("/")
+                ? current.substring (0, current.length - 1)
+                : current;
+            result = replace_literal (result, current, data_uri);
+            result = replace_literal (result, legacy, data_uri);
+        }
+        return result;
+    }
     /* An inline image in the saved copy is cut off. One server fetch replaces it. */
     public bool body_incomplete { get; set; }
     public GenericArray<Attachment> attachments { get; set; }
@@ -7365,7 +7507,7 @@ public class Mail.MessageContent : Object {
         string? html = null;
         string? text = null;
         string? calendar = null;
-        var images = new HashTable<string, string> (str_hash, str_equal);
+        var images = new GenericArray<InlineImage> ();
         var attachments = new GenericArray<Attachment> ();
         var inside_nested = new HashTable<Camel.MimePart, uint> (direct_hash, direct_equal);
 
@@ -7387,9 +7529,12 @@ public class Mail.MessageContent : Object {
 
         var invitation = CalendarStore.parse (calendar);
         var incomplete = mime_body_incomplete (mime);
+        uint64 inline_token = 0;
+        if (images.length > 0)
+            inline_token = InlineImagePages.reserve ();
         string body;
         if (html != null && html.strip ().length > 0)
-            body = rewrite_cids (html, images);
+            body = rewrite_cids (html, images, inline_token);
         else if (text != null && text.strip ().length > 0)
             body = text_to_html (text);
         else if (invitation != null)
@@ -7397,7 +7542,7 @@ public class Mail.MessageContent : Object {
         else
             body = text_to_html (_("This message has no readable content."));
 
-        return new MessageContent () {
+        var content = new MessageContent () {
             uid = uid,
             subject = subject,
             from = from,
@@ -7411,6 +7556,8 @@ public class Mail.MessageContent : Object {
             date = date,
             html = body,
             plain_text = text,
+            inline_token = inline_token,
+            inline_images = images.length > 0 ? images : null,
             has_remote_images = Utils.html_has_remote_images (body),
             body_incomplete = incomplete,
             attachments = attachments,
@@ -7423,6 +7570,9 @@ public class Mail.MessageContent : Object {
             conversation_id = ((Camel.Medium) mime).get_header ("Conversation-ID"),
             high_priority = mime_has_high_priority (mime),
         };
+        if (inline_token != 0)
+            InlineImagePages.publish (content);
+        return content;
     }
 
     private static void collect_body (Camel.MimePart part, ref string? html, ref string? text) {
@@ -7440,7 +7590,7 @@ public class Mail.MessageContent : Object {
             text = decode_part_text (wrapper);
     }
 
-    private static void collect_cid_image (Camel.MimePart part, HashTable<string, string> images) {
+    private static void collect_cid_image (Camel.MimePart part, GenericArray<InlineImage> images) {
         if (!is_cid_image (part))
             return;
 
@@ -7448,12 +7598,16 @@ public class Mail.MessageContent : Object {
         if (bytes == null)
             return;
 
-        var type = part.get_content_type ();
-        var mime_type = type != null ? type.simple () : "image/png";
-        var data_uri = "data:%s;base64,%s".printf (mime_type, Base64.encode (bytes.get_data ()));
         var cid = strip_cid (part.get_content_id ());
-        if (cid.length > 0)
-            images.set (cid, data_uri);
+        if (cid.length == 0)
+            return;
+
+        var type = part.get_content_type ();
+        images.add (new InlineImage () {
+            cid = cid,
+            mime_type = type != null ? type.simple () : "image/png",
+            data = bytes,
+        });
     }
 
     private static void collect_calendar (Camel.MimePart part, ref string? ics) {
@@ -7576,11 +7730,26 @@ public class Mail.MessageContent : Object {
         return builder.str.strip ();
     }
 
-    private static string rewrite_cids (string html, HashTable<string, string> images) {
+    /* Longer cid first, so a short id does not eat the start of a longer one. */
+    private static string rewrite_cids (string html, GenericArray<InlineImage> images, uint64 token) {
+        if (token == 0 || images.length == 0)
+            return html;
+
+        var done = new bool[images.length];
         var result = html;
-        images.foreach ((cid, uri) => {
-            if (cid == null || cid.length == 0 || uri == null || uri.length == 0)
-                return;
+        for (uint n = 0; n < images.length; n++) {
+            uint best = images.length;
+            for (uint i = 0; i < images.length; i++) {
+                if (done[i] || images[i].cid == null || images[i].cid.length == 0)
+                    continue;
+                if (best == images.length || images[i].cid.length > images[best].cid.length)
+                    best = i;
+            }
+            if (best == images.length)
+                break;
+            done[best] = true;
+            var uri = InlineImagePages.uri (token, best);
+            var cid = images[best].cid;
             result = replace_literal (result, "cid:" + cid, uri);
             result = replace_literal (result, "CID:" + cid, uri);
             var unescaped = Uri.unescape_string (cid);
@@ -7588,7 +7757,7 @@ public class Mail.MessageContent : Object {
                 result = replace_literal (result, "cid:" + unescaped, uri);
                 result = replace_literal (result, "CID:" + unescaped, uri);
             }
-        });
+        }
         return result;
     }
 

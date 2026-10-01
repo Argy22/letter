@@ -43,6 +43,7 @@ html, body { margin: 0; height: 100%; background: #ffffff; }
 """;
 
     private WebKit.NetworkSession network_session;
+    private static bool inline_scheme_ready;
     private WebKit.WebView? webview;
     private ulong body_loaded_id;
     private ulong body_failed_id;
@@ -190,6 +191,7 @@ html, body { margin: 0; height: 100%; background: #ffffff; }
 
         this.view_image_action = new SimpleAction ("view-image", null);
         this.view_image_action.activate.connect (() => view_context_image.begin ());
+        ensure_inline_image_scheme ();
         this.network_session = new WebKit.NetworkSession.ephemeral ();
         this.webview = create_reader_view ();
         this.white_cover = new Gtk.Box (Gtk.Orientation.VERTICAL, 0) {
@@ -361,12 +363,13 @@ html, body { margin: 0; height: 100%; background: #ffffff; }
             && Utils.mailbox_uses_org_trust (this.mailbox)
             && this.contacts != null;
         var needs_trust = content.has_remote_images && !trusted && !check_book;
+        var allow_remote = trusted || !content.has_remote_images;
         var same_body = this.document_ready
             && this.current != null
             && this.current.uid == content.uid
             && this.trust_banner.revealed == needs_trust
             && this.webview != null
-            && this.webview.get_settings ().auto_load_images == (trusted || !content.has_remote_images);
+            && this.load_remote_images == allow_remote;
 
         this.current = content;
         this.trust_epoch++;
@@ -379,9 +382,7 @@ html, body { margin: 0; height: 100%; background: #ffffff; }
         this.header_actions.visible = this.allow_header_actions;
 
         this.trust_banner.revealed = needs_trust;
-        this.load_remote_images = trusted || !content.has_remote_images;
-        if (this.webview != null)
-            this.webview.get_settings ().auto_load_images = this.load_remote_images;
+        this.load_remote_images = allow_remote;
         bind_attachments (content.attachments);
         this.invitation_bar.bind (content.invitation);
         if (!same_body)
@@ -452,7 +453,11 @@ html, body { margin: 0; height: 100%; background: #ffffff; }
             /* Each wheel notch is one paint. The animated interpolation
              * repaints the whole visible page on every intermediate frame. */
             enable_smooth_scrolling = false,
-            auto_load_images = this.load_remote_images,
+            /* Inline images are letterimg:, served by us. Remote http images
+             * stay gated by the document policy below, not by this switch:
+             * turning it off would also skip letterimg:, and the text would
+             * paint without its pictures. */
+            auto_load_images = true,
             /* One GPU surface for the life of the reader. main() pins it to
              * the GPU that drives the display. The next mail replaces the
              * document; tearing this surface down is what flashes black. */
@@ -480,6 +485,39 @@ html, body { margin: 0; height: 100%; background: #ffffff; }
             zoom = 1.0;
         view.zoom_level = zoom;
         return view;
+    }
+
+    /* Before any reader WebView exists. The handler has to be on the context
+     * before the web process starts, or letterimg: never resolves. */
+    public static void ensure_inline_image_scheme () {
+        if (inline_scheme_ready)
+            return;
+        inline_scheme_ready = true;
+        var context = WebKit.WebContext.get_default ();
+        context.register_uri_scheme ("letterimg", on_inline_image_request);
+        var security = context.get_security_manager ();
+        security.register_uri_scheme_as_cors_enabled ("letterimg");
+        Utils.sync_log ("reader serves inline images after the text");
+    }
+
+    private static bool inline_request_logged;
+
+    private static void on_inline_image_request (WebKit.URISchemeRequest request) {
+        var uri = request.get_uri ();
+        var image = InlineImagePages.lookup (uri);
+        if (!inline_request_logged) {
+            inline_request_logged = true;
+            Utils.sync_log ("inline image %s %s".printf (
+                image != null && image.data != null ? "ok" : "miss",
+                uri ?? ""
+            ));
+        }
+        if (image == null || image.data == null) {
+            request.finish_error (new IOError.NOT_FOUND ("missing inline image"));
+            return;
+        }
+        var stream = new MemoryInputStream.from_bytes (image.data);
+        request.finish (stream, (int64) image.data.get_size (), image.mime_type);
     }
 
     /* Only when the reader itself goes away. Between messages the same
@@ -550,7 +588,7 @@ html, body { margin: 0; height: 100%; background: #ffffff; }
         });
         view.load_html (
             "%s\n<!-- mail-reload %u -->".printf (html, epoch),
-            "about:blank"
+            InlineImagePages.DOCUMENT
         );
     }
 
@@ -652,18 +690,23 @@ html { color-scheme: only light; }
   }
 }
 </style>""";
+        /* auto-load stays on so letterimg: inline images still arrive.
+         * This policy is what keeps http images out until the sender is trusted. */
+        var head = style;
+        if (!this.load_remote_images)
+            head = "<meta http-equiv=\"Content-Security-Policy\" content=\"img-src letterimg: data: blob:;\">" + style;
         var chrome = print_header_markup (content);
         var body = html;
         var lower = body.down ();
         if (!lower.contains ("<html")) {
             return "<!DOCTYPE html><html><head><meta charset=\"utf-8\">%s</head><body>%s%s</body></html>".printf (
-                style,
+                head,
                 chrome,
                 body
             );
         }
 
-        body = insert_after_open_tag (body, "head", style);
+        body = insert_after_open_tag (body, "head", head);
         body = insert_after_open_tag (body, "body", chrome);
         return body;
     }
@@ -876,8 +919,8 @@ html { color-scheme: only light; }
 
     private bool on_context_menu (WebKit.ContextMenu menu, WebKit.HitTestResult hit) {
         this.context_image_uri = null;
-        /* The body is load_html() on about:blank. Reload replaces it with that
-         * empty page. Back, forward and stop are the same browser chrome. */
+        /* Reload would fetch the reader base URL and wipe the mail. Back,
+         * forward and stop are the same browser chrome. */
         var insert_at = 0;
         for (int i = (int) menu.get_n_items () - 1; i >= 0; i--) {
             var item = menu.get_item_at_position (i);

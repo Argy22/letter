@@ -20,6 +20,36 @@ refactors unless they affect behaviour.
 ## [Unreleased](https://github.com/stalvatero/letter/compare/v1.0.0-rc.5...HEAD)
 
 
+### Changed
+
+- Opening a folder shows the messages already saved on disk. The server is
+  asked only about the folder you opened, and downloading message bodies
+  follows the preference window, continuing next time from where it stopped.
+- Search shows header matches immediately, then adds matches from message
+  text already saved on disk.
+- On Microsoft 365, an interrupted walk of a large Archive keeps the local
+  summary already saved, instead of shrinking the folder.
+- Opening a message reuses one reader. Switching mail is faster and no longer
+  flashes black. On a computer with two graphics chips, Letter draws on the
+  one that drives the screen.
+- Scrolling a long message follows the wheel. The page no longer animates
+  between notches and lag behind the mouse.
+- The message text appears first. Inline pictures fill in afterwards, so a
+  mail full of images can be read and scrolled before they have all loaded.
+  Reply and forward still include those pictures.
+
+
+### Fixed
+
+- Letter could crash when marking the open message read or unread.
+- Pressing Delete while the cursor is in the search field, or any text field,
+  no longer deletes the open message.
+- Opening a message that moved to another folder before sync had caught up
+  looks it up in the folder it is in now, instead of reporting an error.
+- A message whose saved copy ends in the middle of an inline image is
+  downloaded again, so the picture is not left cut off.
+
+
 
 ## [1.0.0-rc.5](https://github.com/stalvatero/letter/compare/v1.0.0-rc.4...v1.0.0-rc.5) - 2026-09-18
 

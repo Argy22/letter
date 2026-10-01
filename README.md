@@ -133,15 +133,11 @@ Tip: Use the **Microsoft 365** (Graph) account type, not classic Exchange Web Se
 
 ## Install
 
-Download Flatpak or `.deb` from [Releases](https://github.com/stalvatero/letter/releases). Flatpak needs GNOME Platform **50** from Flathub. The `.deb` is for Debian/Ubuntu (`letter`).
+Download the Flatpak from [Releases](https://github.com/stalvatero/letter/releases). It needs GNOME Platform **50** from Flathub.
 
 ```sh
-# Flatpak
 flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 flatpak install --user ./Letter-*-x86_64.flatpak
-
-# Debian / Ubuntu
-sudo apt install ./Letter-*-amd64.deb
 ```
 
 Add an account in **Settings → Online Accounts**, then open Letter.
@@ -150,8 +146,6 @@ Add an account in **Settings → Online Accounts**, then open Letter.
 
 ```sh
 flatpak uninstall --user io.github.stalvatero.Letter
-# or
-sudo apt remove letter
 ```
 
 ## Build from source
@@ -195,7 +189,7 @@ sudo meson install -C _build
 
 The Meson `development` profile is only for local work (`meson devenv`). It uses a different application ID and the libadwaita development stripe.
 
-Maintainers: `./scripts/build-flatpak.sh` and `./scripts/build-deb.sh` produce the Release artifacts. End users should use [Releases](https://github.com/stalvatero/letter/releases).
+Maintainers: `./scripts/build-flatpak.sh` produces the Release bundle. End users should use [Releases](https://github.com/stalvatero/letter/releases).
 
 ## Contributing
 
@@ -213,14 +207,9 @@ It needs a recent GNOME platform, not “any desktop that happens to have GTK”
 
 Without GNOME Online Accounts there is nothing to show. That is by design, on any desktop.
 
-## Tested on
+## Why Flatpak
 
-- Arch Linux
-- Fedora Workstation 44
-- Ubuntu 26.04.1 LTS
-- openSUSE Tumbleweed
-
-
+Letter is shipped as a Flatpak so the libraries it needs travel with the app. WebKit, Evolution Data Server, and the rest of the GNOME stack are the versions chosen for Letter, on every machine. A package built for one distribution would link whatever that system already has, and those versions differ enough to break the message view, sync, or mail itself. Flatpak keeps that under control, which is why it is the install path for now.
 
 ## License
 

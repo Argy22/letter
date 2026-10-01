@@ -621,6 +621,8 @@ namespace Mail.Utils {
     public static async File file_from_image_uri (string uri) throws Error {
         if (uri.has_prefix ("data:"))
             return write_data_uri_image (uri);
+        if (uri.has_prefix ("letterimg:"))
+            return write_inline_image (uri);
         if (uri.has_prefix ("file:")) {
             var file = File.new_for_uri (uri);
             if (!file.query_exists ())
@@ -630,6 +632,14 @@ namespace Mail.Utils {
         if (uri.has_prefix ("http://") || uri.has_prefix ("https://"))
             return yield download_image_uri (uri);
         throw new IOError.NOT_SUPPORTED (_("The image could not be opened."));
+    }
+
+    private static File write_inline_image (string uri) throws Error {
+        var image = InlineImagePages.lookup (uri);
+        if (image == null || image.data == null)
+            throw new IOError.NOT_FOUND (_("The image could not be opened."));
+        unowned uint8[] raw = image.data.get_data ();
+        return write_temp_image (raw, image.mime_type);
     }
 
     private static File write_data_uri_image (string uri) throws Error {
@@ -1833,7 +1843,7 @@ namespace Mail.Utils {
     }
 
     public static string quote_html_fragment (MessageContent content) {
-        var html = content.html;
+        var html = content.html_for_compose ();
         if (html == null || html.strip ().length == 0) {
             var text = quote_message_body (content);
             return text.length == 0 ? "" : Markup.escape_text (text).replace ("\n", "<br>\n");

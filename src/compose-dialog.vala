@@ -1839,6 +1839,7 @@ public class Mail.ComposeHtmlView : Gtk.Box {
         };
 
         this.network_session = new WebKit.NetworkSession.ephemeral ();
+        MessageReader.ensure_inline_image_scheme ();
         this.webview = (WebKit.WebView) Object.new (typeof (WebKit.WebView),
             "network-session", this.network_session,
             "settings", settings,
