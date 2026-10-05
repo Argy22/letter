@@ -353,3 +353,119 @@
 +						 const gchar *uid);
  
  G_END_DECLS
+
+--- a/src/Microsoft365/camel/camel-m365-folder.c
++++ b/src/Microsoft365/camel/camel-m365-folder.c
+@@ -1850,9 +1850,6 @@
+ 	gboolean filter_inbox = FALSE;
+ 	gboolean filter_junk = FALSE;
+ 	gboolean filter_junk_inbox = FALSE;
+-	gboolean offline_limit_by_age = FALSE;
+-	CamelTimeUnit offline_limit_unit;
+-	gint offline_limit_value = 0;
+ 	guint32 add_folder_flags = 0;
+ 	gchar *state_file;
+ 	gchar *folder_id;
+@@ -1894,9 +1891,6 @@
+ 		"filter-inbox", &filter_inbox,
+ 		"filter-junk", &filter_junk,
+ 		"filter-junk-inbox", &filter_junk_inbox,
+-		"limit-by-age", &offline_limit_by_age,
+-		"limit-unit", &offline_limit_unit,
+-		"limit-value", &offline_limit_value,
+ 		NULL);
+ 
+ 	g_clear_object (&settings);
+@@ -1914,28 +1908,12 @@
+ 		return NULL;
+ 	}
+ 
+-	if (camel_offline_folder_can_downsync (CAMEL_OFFLINE_FOLDER (folder))) {
+-		time_t when = (time_t) 0;
+-
+-		if (offline_limit_by_age)
+-			when = camel_time_value_apply (when, offline_limit_unit, offline_limit_value);
+-
+-		if (when <= (time_t) 0)
+-			when = (time_t) -1;
+-
+-		/* Ensure cache will expire when set up, otherwise
+-		 * it causes redownload of messages too soon. */
+-		camel_data_cache_set_expire_age (m365_folder->priv->cache, when);
+-		camel_data_cache_set_expire_access (m365_folder->priv->cache, when);
+-	} else {
+-		/* Set cache expiration for one week. */
+-		camel_data_cache_set_expire_age (m365_folder->priv->cache, 60 * 60 * 24 * 7);
+-		camel_data_cache_set_expire_access (m365_folder->priv->cache, 60 * 60 * 24 * 7);
+-	}
+-
+-	camel_binding_bind_property (store, "online",
+-		m365_folder->priv->cache, "expire-enabled",
+-		G_BINDING_SYNC_CREATE);
++	/* Letter owns how long a body stays on disk. -1 is Camel's
++	 * "do not expire". The sweep also requires expire-enabled, and the
++	 * store used to turn that on whenever it was online. */
++	camel_data_cache_set_expire_age (m365_folder->priv->cache, -1);
++	camel_data_cache_set_expire_access (m365_folder->priv->cache, -1);
++	camel_data_cache_set_expire_enabled (m365_folder->priv->cache, FALSE);
+ 
+ 	if (m365_folder_has_inbox_type (m365_store, full_name)) {
+ 		if (filter_inbox)
+
+--- a/src/EWS/camel/camel-ews-folder.c
++++ b/src/EWS/camel/camel-ews-folder.c
+@@ -1793,9 +1793,6 @@
+ 	gboolean filter_inbox = FALSE;
+ 	gboolean filter_junk = FALSE;
+ 	gboolean filter_junk_inbox = FALSE;
+-	gboolean offline_limit_by_age = FALSE;
+-	CamelTimeUnit offline_limit_unit;
+-	gint offline_limit_value = 0;
+ 	guint32 add_folder_flags = 0;
+ 	gchar *state_file;
+ 	const gchar *short_name;
+@@ -1830,9 +1827,6 @@
+ 		"filter-inbox", &filter_inbox,
+ 		"filter-junk", &filter_junk,
+ 		"filter-junk-inbox", &filter_junk_inbox,
+-		"limit-by-age", &offline_limit_by_age,
+-		"limit-unit", &offline_limit_unit,
+-		"limit-value", &offline_limit_value,
+ 		NULL);
+ 
+ 	g_clear_object (&settings);
+@@ -1850,28 +1844,12 @@
+ 		return NULL;
+ 	}
+ 
+-	if (camel_offline_folder_can_downsync (CAMEL_OFFLINE_FOLDER (folder))) {
+-		time_t when = (time_t) 0;
+-
+-		if (offline_limit_by_age)
+-			when = camel_time_value_apply (when, offline_limit_unit, offline_limit_value);
+-
+-		if (when <= (time_t) 0)
+-			when = (time_t) -1;
+-
+-		/* Ensure cache will expire when set up, otherwise
+-		 * it causes redownload of messages too soon. */
+-		camel_data_cache_set_expire_age (ews_folder->cache, when);
+-		camel_data_cache_set_expire_access (ews_folder->cache, when);
+-	} else {
+-		/* Set cache expiration for one week. */
+-		camel_data_cache_set_expire_age (ews_folder->cache, 60 * 60 * 24 * 7);
+-		camel_data_cache_set_expire_access (ews_folder->cache, 60 * 60 * 24 * 7);
+-	}
+-
+-	camel_binding_bind_property (store, "online",
+-		ews_folder->cache, "expire-enabled",
+-		G_BINDING_SYNC_CREATE);
++	/* Letter owns how long a body stays on disk. -1 is Camel's
++	 * "do not expire". The sweep also requires expire-enabled, and the
++	 * store used to turn that on whenever it was online. */
++	camel_data_cache_set_expire_age (ews_folder->cache, -1);
++	camel_data_cache_set_expire_access (ews_folder->cache, -1);
++	camel_data_cache_set_expire_enabled (ews_folder->cache, FALSE);
+ 
+ 	if (!g_ascii_strcasecmp (folder_name, "Inbox") ||
+ 	    folder_has_inbox_type (CAMEL_EWS_STORE (store), folder_name)) {

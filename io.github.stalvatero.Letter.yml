@@ -173,6 +173,7 @@ modules:
         url: https://download.gnome.org/sources/evolution-ews/3.58/evolution-ews-3.58.3.tar.xz
         sha256: 3f6ef8bb6389013e843e258ce1dc317a891a34f87d79780c9aef04d2741abc92
       # Failed/cancelled Graph delta must not save a partial folder summary.
+      # Message files do not expire here; Letter owns that window.
       - type: patch
         path: patches/evolution-ews-m365-refresh-commit-on-success.patch
     # Drop Evolution UI leftovers now that Graph/EWS providers are installed.

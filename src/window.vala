@@ -3616,10 +3616,18 @@ public class Mail.Window : Adw.ApplicationWindow {
             if (Utils.process_rss_above_soft_ceiling ()) {
                 this.mail_session.relieve_memory_pressure ();
                 if (Utils.process_rss_above_soft_ceiling ()) {
-                    Utils.sync_log ("%s bodies “%s” paused — memory".printf (this.sync_log_name, folder.name));
-                    Timeout.add_seconds (30, prefetch_folder_bodies.callback);
-                    yield;
-                    continue;
+                    /* Waiting here holds folder sync, and the mail check stays
+                     * parked until it ends — so new mail never arrives. The
+                     * cursor stays; the next check tries bodies again. */
+                    var rss_mb = Utils.process_rss_bytes () / (1024.0 * 1024.0);
+                    Utils.sync_log (
+                        "%s bodies “%s” stopped — memory still %.0f MiB".printf (
+                            this.sync_log_name,
+                            folder.name,
+                            rss_mb
+                        )
+                    );
+                    return;
                 }
             }
             uint fetched = 0;

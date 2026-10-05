@@ -1837,6 +1837,7 @@ public class Mail.ComposeHtmlView : Gtk.Box {
             enable_page_cache = false,
             auto_load_images = true,
         };
+        MessageReader.prefer_one_web_process (settings);
 
         this.network_session = new WebKit.NetworkSession.ephemeral ();
         MessageReader.ensure_inline_image_scheme ();

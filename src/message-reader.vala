@@ -463,6 +463,7 @@ html, body { margin: 0; height: 100%; background: #ffffff; }
              * document; tearing this surface down is what flashes black. */
             hardware_acceleration_policy = WebKit.HardwareAccelerationPolicy.ALWAYS,
         };
+        prefer_one_web_process (settings);
         var view = (WebKit.WebView) Object.new (typeof (WebKit.WebView),
             "network-session", this.network_session,
             "settings", settings,
@@ -485,6 +486,46 @@ html, body { margin: 0; height: 100%; background: #ffffff; }
             zoom = 1.0;
         view.zoom_level = zoom;
         return view;
+    }
+
+    private static bool web_process_limited;
+
+    /* Site isolation gives every origin in a message its own WebKit process.
+     * Those processes stay alive, so a few hours of mail becomes gigabytes.
+     * One process per view is enough: the document is replaced in place. */
+    /* Host webkitgtk-6.0.vapi stops before the 2.42 feature API. */
+    [CCode (cname = "webkit_settings_get_all_features", cheader_filename = "webkit/webkit.h")]
+    private static extern void* all_webkit_features ();
+    [CCode (cname = "webkit_feature_list_unref", cheader_filename = "webkit/webkit.h")]
+    private static extern void unref_webkit_features (void* list);
+    [CCode (cname = "webkit_feature_list_get_length", cheader_filename = "webkit/webkit.h")]
+    private static extern size_t webkit_feature_count (void* list);
+    [CCode (cname = "webkit_feature_list_get", cheader_filename = "webkit/webkit.h")]
+    private static extern void* webkit_feature_at (void* list, size_t index);
+    [CCode (cname = "webkit_feature_get_identifier", cheader_filename = "webkit/webkit.h")]
+    private static extern unowned string webkit_feature_id (void* feature);
+    [CCode (cname = "webkit_settings_set_feature_enabled", cheader_filename = "webkit/webkit.h")]
+    private static extern void set_webkit_feature (WebKit.Settings settings, void* feature, bool enabled);
+
+    public static void prefer_one_web_process (WebKit.Settings settings) {
+        var list = all_webkit_features ();
+        var found = false;
+        var n = webkit_feature_count (list);
+        for (size_t i = 0; i < n; i++) {
+            var feature = webkit_feature_at (list, i);
+            if (webkit_feature_id (feature) != "SiteIsolationEnabled")
+                continue;
+            set_webkit_feature (settings, feature, false);
+            found = true;
+            break;
+        }
+        unref_webkit_features (list);
+        if (web_process_limited)
+            return;
+        web_process_limited = true;
+        Utils.sync_log (found
+            ? "web process: one process per view"
+            : "web process: site isolation feature missing");
     }
 
     /* Before any reader WebView exists. The handler has to be on the context

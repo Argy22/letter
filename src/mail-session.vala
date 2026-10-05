@@ -757,7 +757,11 @@ public class Mail.MailSession : Camel.Session {
                 merged = true;
                 added = messages.length > kept ? messages.length - kept : 0;
                 gone = 0;
-                this.last_list_refresh_incomplete = true;
+                /* A finished refresh stays finished. Keeping Letter's longer
+                 * list must not pin the startup cursor on this folder, or
+                 * Inbox is skipped on every later launch. */
+                if (!refresh_completed)
+                    this.last_list_refresh_incomplete = true;
             } else if (reason == "complete empty" || reason == "small-folder trust shrink") {
                 Utils.sync_log (
                     "headers “%s” %s (%u ← %u)".printf (
