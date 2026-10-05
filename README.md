@@ -10,7 +10,7 @@ This is not a GNOME Core application, but it follows the clean GNOME 50 look and
 
 Feel free to try it out and enjoy the app's potential. All feedback is welcome.
 
-**1.0.0-rc.5** is the current release candidate toward 1.0. It is meant for daily use: reading, composing, search, notifications, and cache-first sync are in place. Account setup still happens only in GNOME Settings → Online Accounts. There is no in-app IMAP wizard and no mailbox that exists only inside Letter. This RC gathers feedback before **1.0.0**.
+**1.0.0** is the current release. Reading, composing, search, notifications, and cache-first sync are in place. Install the Flatpak from [Releases](https://github.com/stalvatero/letter/releases). Account setup still happens only in GNOME Settings → Online Accounts. There is no in-app IMAP wizard and no mailbox that exists only inside Letter.
 
 ### Available languages
 
@@ -56,7 +56,7 @@ Feel free to try it out and enjoy the app's potential. All feedback is welcome.
 - At startup and on each sync cycle, Letter still probes non-Inbox folders lightly: empty lists that have mail on the server, or lists whose remote counts drifted (for example mail filed from a phone)
 - Archive, trash, move, and flag changes update the UI immediately; the server push waits for the sync timer, F5, startup, or quit (so Send stays responsive)
 - Pending soft changes survive a quit, crash or offline working in a small on-disk registry and flush on the next start
-- Sending uses a virtual **Outbox** (retry / edit / cancel); 
+- Sending uses a virtual **Outbox** (retry / edit / cancel);
 
 
 
@@ -78,6 +78,8 @@ Feel free to try it out and enjoy the app's potential. All feedback is welcome.
 - When you reply and add a new recipient, Letter can offer to attach files from the original message
 - Save drafts
 
+
+
 ### Keyboard
 
 Keyboard shortcuts can be viewed by pressing F1 or via the Letter main menu.
@@ -98,15 +100,7 @@ Letter is built for the **GNOME desktop**. A normal GNOME 50 install already has
 
 You must add at least one email account in **Settings → Online Accounts**. IMAP/SMTP are added there too, not inside Letter application. Without Online Accounts, there is nothing to show.
 
-
-| Package                                   | Role                                                                    |
-| ----------------------------------------- | ----------------------------------------------------------------------- |
-| `evolution-ews`                           | Microsoft 365 (Graph) mail, calendar, and contacts                      |
-| Hunspell + a dictionary for your language | Spell checking while composing                                          |
-| Sushi                                     | Quick attachment preview; otherwise Letter opens the default viewer app |
-
-
-If you use a Microsoft 365 or Exchange account, you need the `evolution-ews` package for Graph mail (and for calendar/contacts on the host). Distro install:
+For a Microsoft 365 mailbox, install `evolution-ews` on the system as well. Online Accounts can sign you in without it, but Evolution Data Server only publishes the mail source when that package is present. Letter then waits and shows the account as not ready. The Flatpak carries its own copy of the same library, and that is the one Letter uses to download mail. IMAP does not need this package.
 
 ```
 Arch Linux
@@ -119,9 +113,7 @@ Fedora
 sudo dnf install evolution-ews
 ```
 
-The **Flatpak bundle** already includes the Graph **mail** Camel provider. You still want host `evolution-ews` if Calendar/Contacts on the desktop should use the same Microsoft account.
-
-`evolution-ews` currently depends on the Evolution *package* because a plugin links Evolution’s UI libraries. You do not need to *run* Evolution aaplication and just right now there is no way to safely uninstall Evolution itself.  Leave it closed so only Letter downloads messages. You can hide Evolution app from app drawer by overriding .desktop file. If you have standard repository app, you can use this command in your terminal:
+`evolution-ews` also installs the Evolution application, which Calendar and Contacts use for the same Microsoft account. You do not need to run Evolution for Letter. Leave it closed so only Letter downloads messages. To hide it from the app grid:
 
 ```sh
 mkdir -p ~/.local/share/applications && cp /usr/share/applications/org.gnome.Evolution.desktop ~/.local/share/applications/ && echo "NoDisplay=true" >> ~/.local/share/applications/org.gnome.Evolution.desktop
@@ -130,6 +122,8 @@ update-desktop-database ~/.local/share/applications
 ```
 
 Tip: Use the **Microsoft 365** (Graph) account type, not classic Exchange Web Services. Microsoft starts blocking EWS on Exchange Online on 1 October 2026.
+
+For the full experience, **Hunspell** and **Sushi** are recommended. Hunspell (package name `hunspell` and `hunspell-en_us` or `hunspell-it` or `hunspell-YOUR_LANG`) spell-checks while you compose, so install it with a dictionary for your language. Sushi (package name `sushi` or `gnome-sushi`, check your distro) previews an attachment in place. Letter still composes and sends mail when they are not installed: spell check stays off, and an attachment opens in the default application.
 
 ## Install
 
@@ -147,6 +141,8 @@ Add an account in **Settings → Online Accounts**, then open Letter.
 ```sh
 flatpak uninstall --user io.github.stalvatero.Letter
 ```
+
+
 
 ## Build from source
 
@@ -199,7 +195,7 @@ Letter is a personal project. I welcome **bug reports, feature requests, and fee
 
 ## Where it runs
 
-Letter is a GNOME application. I design it, test it, and use it every day on my Arch Linux and **GNOME 50**. That is the supported environment for this release candidate.
+Letter is a GNOME application. I design it, test it, and use it every day on my Arch Linux and **GNOME 50**. That is the supported environment for this release.
 
 It needs a recent GNOME platform, not “any desktop that happens to have GTK”. GTK 4 has existed since GNOME 40, but Letter also needs current libadwaita, GNOME Online Accounts, and Evolution Data Server. **GNOME 40 or 41 will not work.** The realistic floor is a current GNOME (about 49 or 50 and newer). I do not test older releases and I will not try to keep them working.
 

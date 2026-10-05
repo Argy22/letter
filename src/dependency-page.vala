@@ -115,7 +115,7 @@ public class Mail.DependencyListPage : Adw.NavigationPage {
         listed.add (package (
             _("Microsoft Graph backends"),
             flatpak
-                ? _("Graph mail is bundled in this Flatpak. Install evolution-ews on the host if you also want Microsoft 365 calendar and contacts via the desktop.")
+                ? _("Online Accounts can sign in without this package, but the system data server only publishes a Microsoft 365 mailbox when evolution-ews is installed. Letter’s own copy then downloads the mail. The same host package serves desktop Calendar and Contacts.")
                 : _("evolution-ews for Microsoft 365 mail, calendar, and contacts"),
             flatpak
                 ? Utils.has_microsoft365_mail_backend ()

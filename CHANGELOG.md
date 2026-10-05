@@ -7,7 +7,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 How we maintain it:
 
-- During development, add bullets under **[Unreleased](https://github.com/stalvatero/letter/compare/v1.0.0-rc.5...HEAD)**.
+- During development, add bullets under **[Unreleased](https://github.com/stalvatero/letter/compare/v1.0.0...HEAD)**.
 - On each release (rc or stable), rename that section to the version + date, and
 copy a short summary into `data/io.github.stalvatero.Letter.metainfo.xml.in.in`
 (`<releases>`, leave msgstr empty in po files — keep release notes in English)
@@ -17,7 +17,10 @@ refactors unless they affect behaviour.
 
 
 
-## [Unreleased](https://github.com/stalvatero/letter/compare/v1.0.0-rc.5...HEAD)
+## [Unreleased](https://github.com/stalvatero/letter/compare/v1.0.0...HEAD)
+
+
+## [1.0.0](https://github.com/stalvatero/letter/compare/v1.0.0-rc.5...v1.0.0) - 2026-10-05
 
 
 ### Changed
@@ -37,6 +40,10 @@ refactors unless they affect behaviour.
 - The message text appears first. Inline pictures fill in afterwards, so a
   mail full of images can be read and scrolled before they have all loaded.
   Reply and forward still include those pictures.
+- Letter is installed as a Flatpak. Downloaded message bodies stay on disk:
+  the bundled Microsoft 365 library no longer deletes them after a week.
+  The system evolution-ews package is still required for a Microsoft 365
+  mailbox to appear. Spell checking and attachment preview stay optional.
 
 
 ### Fixed
@@ -48,6 +55,12 @@ refactors unless they affect behaviour.
   looks it up in the folder it is in now, instead of reporting an error.
 - A message whose saved copy ends in the middle of an inline image is
   downloaded again, so the picture is not left cut off.
+- Clicking a message that has just arrived, while that folder is still
+  syncing, shows the sender and subject from the list and waits for the body,
+  instead of an empty message.
+- Startup sync no longer stops for good on Archive when the server list is
+  shorter than the one Letter already has, so Inbox still gets its turn.
+- Downloading message bodies no longer holds up new mail when memory is high.
 
 
 

@@ -56,7 +56,19 @@
     <category>Email</category>
   </categories>
   <releases>
-    <release version="@version@" type="development" date="2026-09-18">
+    <release version="1.0.0" type="stable" date="2026-10-05">
+      <description>
+        <p>
+          First stable release, shipped as a Flatpak. The message text appears
+          before inline pictures, the reader stays on one surface, and search
+          shows header matches immediately. Microsoft 365 mail keeps saved
+          message bodies instead of dropping them after a week. A message that
+          arrives while its folder is still syncing waits for its body instead
+          of opening empty.
+        </p>
+      </description>
+    </release>
+    <release version="1.0.0-rc.5" type="development" date="2026-09-18">
       <description>
         <p>
           Fifth 1.0 release candidate. Brazilian Portuguese translation,
