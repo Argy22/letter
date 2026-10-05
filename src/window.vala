@@ -6039,37 +6039,77 @@ public class Mail.Window : Adw.ApplicationWindow {
         Utils.sync_log ("body fetch — “%s” uid %s".printf (folder.name, message.uid));
         uint status_token = 0;
         try {
-            if (this.camel_align_busy) {
-                status_token = show_sync_status (_("Loading message…"));
-                Utils.sync_log (
-                    "body fetch waits — headers “%s” still open".printf (
-                        this.camel_align_name ?? "?"
-                    )
-                );
-                while (this.camel_align_busy
-                    && !cancellable.is_cancelled ()
-                    && this.open_message_uid == message.uid) {
-                    Timeout.add (200, load_message_body.callback);
-                    yield;
-                }
+            MessageContent? content = null;
+            for (int attempt = 0; attempt < 8 && content == null; attempt++) {
                 if (cancellable.is_cancelled () || this.open_message_uid != message.uid)
                     return;
-                var after = this.mail_session.peek_body (account, folder, message.uid);
-                if (after != null) {
-                    this.open_content = after;
-                    this.message_reader.show_content (after, message.outgoing);
-                    update_message_actions ();
-                    schedule_mark_seen (account, folder, message);
-                    prefetch_thread_bodies.begin (message);
-                    Utils.sync_log ("body fetch finished “%s” (after headers)".printf (folder.name));
-                    return;
+
+                if (this.camel_align_busy) {
+                    if (status_token == 0)
+                        status_token = show_sync_status (_("Loading message…"));
+                    Utils.sync_log (
+                        "body fetch waits — headers “%s” still open".printf (
+                            this.camel_align_name ?? "?"
+                        )
+                    );
+                    while (this.camel_align_busy
+                        && !cancellable.is_cancelled ()
+                        && this.open_message_uid == message.uid) {
+                        Timeout.add (200, load_message_body.callback);
+                        yield;
+                    }
+                    if (cancellable.is_cancelled () || this.open_message_uid != message.uid)
+                        return;
+                    var after = this.mail_session.peek_body (account, folder, message.uid);
+                    if (after != null && !after.is_unready_shell ()) {
+                        content = after;
+                        break;
+                    }
+                }
+
+                if (status_token == 0)
+                    status_token = show_sync_status (_("Loading message…"));
+                try {
+                    content = yield this.mail_session.load_message (
+                        account,
+                        folder,
+                        message.uid,
+                        cancellable
+                    );
+                    if (content.is_unready_shell () && !content.shell_confirmed)
+                        content = null;
+                } catch (Error e) {
+                    if (cancellable.is_cancelled () || this.open_message_uid != message.uid)
+                        return;
+                    if (Utils.is_cancelled_error (e))
+                        return;
+                    var syncing = e.message == _(
+                        "This message is still syncing with the server. Try again in a moment."
+                    );
+                    var busy = this.camel_align_busy || this.folder_sync_active
+                        || this.startup_sync_active || this.scheduled_sync_active;
+                    if (syncing && busy && attempt + 1 < 8) {
+                        Timeout.add (400, load_message_body.callback);
+                        yield;
+                        continue;
+                    }
+                    throw e;
+                }
+
+                if (content == null) {
+                    var busy = this.camel_align_busy || this.folder_sync_active
+                        || this.startup_sync_active || this.scheduled_sync_active;
+                    if (busy && attempt + 1 < 8) {
+                        Timeout.add (400, load_message_body.callback);
+                        yield;
+                        continue;
+                    }
+                    throw new IOError.NOT_FOUND (
+                        _("This message is still syncing with the server. Try again in a moment.")
+                    );
                 }
             }
-
-            if (status_token == 0)
-                status_token = show_sync_status (_("Loading message…"));
-            var content = yield this.mail_session.load_message (account, folder, message.uid, cancellable);
-            if (cancellable.is_cancelled () || this.open_message_uid != message.uid)
+            if (cancellable.is_cancelled () || this.open_message_uid != message.uid || content == null)
                 return;
 
             this.open_content = content;

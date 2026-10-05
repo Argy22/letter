@@ -2581,6 +2581,10 @@ public class Mail.MailSession : Camel.Session {
     ) throws Error {
         var key = body_key (account, folder, uid);
         var cached = this.body_cache.get (key);
+        if (cached != null && cached.is_unready_shell () && !cached.shell_confirmed) {
+            forget_body_cache_key (key);
+            cached = null;
+        }
         if (cached != null) {
             touch_body_cache_key (key);
             this.pinned_body_key = key;
@@ -2608,9 +2612,23 @@ public class Mail.MailSession : Camel.Session {
             );
             return null;
         }
+        /* A new Inbox row can appear while the tip is still writing the MIME.
+         * That empty object parses as “Unknown sender” and then stays on screen. */
+        if (MessageContent.mime_unready_shell (mime) && !placeholder_uid (uid)) {
+            Utils.sync_log (
+                "open body “%s” uid=%s not on disk yet — waiting".printf (folder.name, uid)
+            );
+            return null;
+        }
 
-        Utils.sync_log ("open body “%s” uid=%s from disk (no wait)".printf (folder.name, uid));
         var fetched = MessageContent.from_mime (uid, mime);
+        if (fetched.is_unready_shell ()) {
+            Utils.sync_log (
+                "open body “%s” uid=%s not on disk yet — waiting".printf (folder.name, uid)
+            );
+            return null;
+        }
+        Utils.sync_log ("open body “%s” uid=%s from disk (no wait)".printf (folder.name, uid));
         this.pinned_body_key = key;
         remember_body_cache (key, fetched);
         index_cached_body (account, folder, uid, fetched.plain_text);
@@ -2653,6 +2671,10 @@ public class Mail.MailSession : Camel.Session {
     public async MessageContent load_message (Account account, Folder folder, string uid, Cancellable? cancellable = null) throws Error {
         var key = body_key (account, folder, uid);
         var cached = this.body_cache.get (key);
+        if (cached != null && cached.is_unready_shell () && !cached.shell_confirmed) {
+            forget_body_cache_key (key);
+            cached = null;
+        }
         if (cached != null && (!cached.body_incomplete || this.body_reload_tried.contains (key))) {
             touch_body_cache_key (key);
             this.pinned_body_key = key;
@@ -2667,6 +2689,7 @@ public class Mail.MailSession : Camel.Session {
         if (mime == null)
             mime = yield mime_kept_locally (account, folder.full_name, uid);
         Camel.MimeMessage? stale = null;
+        var downloaded_fresh = false;
         if (from_this_folder && mime != null && MessageContent.mime_body_incomplete (mime)
             && !placeholder_uid (uid)
             && NetworkMonitor.get_default ().network_available
@@ -2689,6 +2712,41 @@ public class Mail.MailSession : Camel.Session {
                     )
                 );
             }
+        } else if (from_this_folder && mime != null && MessageContent.mime_unready_shell (mime)
+            && !placeholder_uid (uid)) {
+            /* The tip publishes the row before the MIME is written. Do not
+             * drop the file while that refresh still holds it. */
+            if (this.graph_refresh_holders > 0) {
+                Utils.sync_log (
+                    "open body “%s” uid=%s shell on disk — folder still aligning".printf (
+                        folder.name,
+                        uid
+                    )
+                );
+                throw new IOError.NOT_FOUND (
+                    _("This message is still syncing with the server. Try again in a moment.")
+                );
+            }
+            if (!this.body_reload_tried.contains (key)
+                && NetworkMonitor.get_default ().network_available) {
+                this.body_reload_tried.set (key, 1);
+                if (discard_m365_cached_body (camel_folder, uid)) {
+                    Utils.sync_log (
+                        "open body “%s” uid=%s shell on disk — downloading again".printf (
+                            folder.name,
+                            uid
+                        )
+                    );
+                    mime = null;
+                } else {
+                    Utils.sync_log (
+                        "open body “%s” uid=%s shell on disk — cache could not be dropped".printf (
+                            folder.name,
+                            uid
+                        )
+                    );
+                }
+            }
         } else if (mime != null) {
             Utils.sync_log ("open body “%s” uid=%s from disk".printf (folder.name, uid));
         }
@@ -2696,6 +2754,7 @@ public class Mail.MailSession : Camel.Session {
             Utils.sync_log ("open body “%s” uid=%s from server".printf (folder.name, uid));
             try {
                 mime = yield fetch_camel_message (camel_folder, uid, Priority.DEFAULT, cancellable);
+                downloaded_fresh = mime != null;
             } catch (Error e) {
                 Utils.sync_log (
                     "open body “%s” uid=%s download failed: %s".printf (
@@ -2730,6 +2789,19 @@ public class Mail.MailSession : Camel.Session {
             Utils.sync_log (
                 "open body “%s” uid=%s still incomplete after open".printf (folder.name, uid)
             );
+        if (fetched.is_unready_shell ()) {
+            if (downloaded_fresh || this.body_reload_tried.contains (key))
+                fetched.shell_confirmed = true;
+            else if (!placeholder_uid (uid)
+                && NetworkMonitor.get_default ().network_available) {
+                Utils.sync_log (
+                    "open body “%s” uid=%s still a shell — not cached".printf (folder.name, uid)
+                );
+                throw new IOError.NOT_FOUND (
+                    _("This message is still syncing with the server. Try again in a moment.")
+                );
+            }
+        }
         this.pinned_body_key = key;
         remember_body_cache (key, fetched);
         index_cached_body (account, folder, uid, fetched.plain_text);
@@ -5941,7 +6013,8 @@ public class Mail.MailSession : Camel.Session {
         }
 
         var mime = message_from_local_cache (camel_folder, uid);
-        if (mime != null && !MessageContent.mime_body_incomplete (mime)) {
+        if (mime != null && !MessageContent.mime_body_incomplete (mime)
+            && !MessageContent.mime_unready_shell (mime)) {
             var content = MessageContent.from_mime (uid, mime);
             remember_body_cache (key, content);
             index_cached_body (account, folder, uid, content.plain_text);
@@ -7350,6 +7423,40 @@ public class Mail.MessageContent : Object {
     }
     /* An inline image in the saved copy is cut off. One server fetch replaces it. */
     public bool body_incomplete { get; set; }
+    /* Empty MIME seen after a real download, not a tip that has not finished. */
+    public bool shell_confirmed { get; set; }
+
+    /* The list row can exist before Camel has From, Subject, or a body.
+     * Parsing that object is the “(No subject)” / “Unknown sender” reader. */
+    public bool is_unready_shell () {
+        if (this.invitation != null)
+            return false;
+        if (this.attachments != null && this.attachments.length > 0)
+            return false;
+        if (this.inline_images != null && this.inline_images.length > 0)
+            return false;
+        if (this.plain_text != null && this.plain_text.strip ().length > 0)
+            return false;
+        if (this.html != null && this.html.strip ().length > 0
+            && this.html != text_to_html (_("This message has no readable content.")))
+            return false;
+        if (this.to.strip ().length > 0)
+            return false;
+        return this.from == _("Unknown sender") && this.subject == _("(No subject)");
+    }
+
+    public static bool mime_unready_shell (Camel.MimeMessage mime) {
+        if ((mime.get_subject () ?? "").strip ().length > 0)
+            return false;
+        if (Utils.format_internet_address (mime.get_from ()).strip ().length > 0)
+            return false;
+        if ((Utils.address_email (mime.get_from ()) ?? "").strip ().length > 0)
+            return false;
+        var to = Utils.format_internet_address (mime.get_recipients (Camel.RECIPIENT_TYPE_TO));
+        if (to.strip ().length > 0)
+            return false;
+        return true;
+    }
     public GenericArray<Attachment> attachments { get; set; }
     public Invitation? invitation { get; set; }
     public string? message_id { get; set; }
