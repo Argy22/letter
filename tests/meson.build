@@ -57,3 +57,19 @@ test_rows = executable(
 )
 
 test('rows', test_rows)
+
+test_important_cache = executable(
+  'test-important-cache',
+  [
+    meson.project_source_root() / 'src' / 'account.vala',
+    meson.project_source_root() / 'src' / 'header-list-policy.vala',
+    'test-important-cache.vala',
+  ],
+  dependencies: [
+    glib_dep,
+    dependency('gobject-2.0'),
+  ],
+  include_directories: config_h_dir,
+)
+
+test('important-cache', test_important_cache)

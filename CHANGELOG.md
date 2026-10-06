@@ -25,6 +25,9 @@ refactors unless they affect behaviour.
 - Folder, message, and conversation rows are released when they leave the
   list. Opening many conversations no longer keeps those rows in memory.
   Reported by [Jake](https://github.com/user13ac05dcf7).
+- Gmail’s Important folder drops messages that are no longer important,
+  including when that folder is large. Those messages no longer stay marked
+  important in other folders. Reported by [Illya Yalovyy](https://github.com/IllyaYalovyy).
 
 
 ## [1.0.0](https://github.com/stalvatero/letter/compare/v1.0.0-rc.5...v1.0.0) - 2026-10-05

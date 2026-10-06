@@ -641,6 +641,8 @@ public class Mail.MailSession : Camel.Session {
     public bool last_list_refresh_failed { get; private set; }
     /* Camel UID summary shrank past INCOMPLETE_REFRESH_SHRINK_MAX this refresh. */
     public bool last_list_refresh_rewound { get; private set; }
+    /* refresh_info ran and returned. Skipped, timed out, and failed walks stay false. */
+    public bool last_list_refresh_completed { get; private set; }
 
     public async GenericArray<Message> list_messages (
         Account account,
@@ -663,10 +665,13 @@ public class Mail.MailSession : Camel.Session {
 
         this.last_list_refresh_failed = false;
         this.last_list_refresh_rewound = false;
+        this.last_list_refresh_completed = false;
         var refresh_completed = true;
+        var refresh_performed = false;
         if (refresh
             && refresh_timeout_seconds != REFRESH_INFO_SKIP
             && !folder_has_pending_flags (account, folder)) {
+            refresh_performed = true;
             refresh_completed = yield refresh_folder_info (
                 camel_folder,
                 high,
@@ -675,6 +680,12 @@ public class Mail.MailSession : Camel.Session {
             );
         }
         this.last_list_refresh_incomplete = refresh && !refresh_completed;
+        /* Pending flags and REFRESH_INFO_SKIP leave refresh_completed true
+         * without talking to the server. That must not count as finished. */
+        var server_refresh_finished = refresh_performed
+            && refresh_completed
+            && !this.last_list_refresh_failed;
+        this.last_list_refresh_completed = server_refresh_finished;
 
         if (cancellable != null && cancellable.is_cancelled ())
             throw new IOError.CANCELLED ("Cancelled");
@@ -711,34 +722,33 @@ public class Mail.MailSession : Camel.Session {
          *    the server). Empty Trash/Junk from Letter already cleared the
          *    list before this call; a finished walk that returns no UIDs
          *    does the same for any other folder.
-         * 3. Complete refresh + previous already large (≥ HEADER_LIST_LARGE)
-         *    + catastrophic shrink to a non-empty partial → keep prior list.
-         *    Online Archive and any big custom folder can "complete" with a
-         *    tiny local UID set; kind/name must not gate this.
-         * 4. Small folders + complete refresh → trust Camel (normal deletes).
+         * 3. Finished Gmail Important refresh → accept a shorter list. The
+         *    folder is a label; the rows that left it must not stay marked
+         *    important elsewhere. The walk must have run to completion.
+         *    A skipped, timed-out, or failed refresh does not qualify.
+         * 4. Every other complete refresh + previous already large
+         *    (≥ HEADER_LIST_LARGE) + catastrophic shrink to a non-empty
+         *    partial → keep prior list. Online Archive and any big custom
+         *    folder can "complete" with a tiny local UID set. Kind and name
+         *    do not open this door for them.
+         * 5. Small folders + complete refresh → trust Camel (normal deletes).
          *
          * Empty Trash/Junk *from Letter* clears RAM/disk/high-water first, so
          * previous is already empty before the next list_messages. */
         if (previous != null
             && previous.length > 0
             && messages.length + INCOMPLETE_REFRESH_SHRINK_MAX < previous.length) {
-            var keep = false;
             string reason;
-            if (refresh && !refresh_completed) {
-                keep = true;
-                reason = "incomplete refresh";
-            } else if (messages.length == 0 && refresh && refresh_completed) {
-                keep = false;
-                reason = "complete empty";
-            } else if (previous.length >= HEADER_LIST_LARGE) {
-                keep = true;
-                reason = refresh
-                    ? (refresh_completed ? "large-folder refuse shrink" : "incomplete refresh")
-                    : "large-folder local refuse shrink";
-            } else {
-                keep = false;
-                reason = "small-folder trust shrink";
-            }
+            var keep = HeaderListPolicy.keep_prior_on_shrink (
+                account.kind,
+                folder.kind,
+                previous.length,
+                messages.length,
+                refresh,
+                refresh_completed,
+                server_refresh_finished,
+                out reason
+            );
 
             if (keep) {
                 var kept = previous.length;
@@ -762,7 +772,9 @@ public class Mail.MailSession : Camel.Session {
                  * Inbox is skipped on every later launch. */
                 if (!refresh_completed)
                     this.last_list_refresh_incomplete = true;
-            } else if (reason == "complete empty" || reason == "small-folder trust shrink") {
+            } else if (reason == "complete empty"
+                || reason == "small-folder trust shrink"
+                || reason == "complete Important") {
                 Utils.sync_log (
                     "headers “%s” %s (%u ← %u)".printf (
                         folder.name,
@@ -1396,10 +1408,10 @@ public class Mail.MailSession : Camel.Session {
     /* Folders with at least this many known headers are treated as *large*
      * for list UX and shrink protection — objective scale, not folder kind
      * or display name (custom archive, big Sent, big Trash, …). */
-    public const uint HEADER_LIST_LARGE = 500;
+    public const uint HEADER_LIST_LARGE = HeaderListPolicy.LARGE;
     /* After a timed-out / untrusted refresh, reject Camel merges that shrink
      * Letter's header list by more than this (partial summaries look "empty"). */
-    public const uint INCOMPLETE_REFRESH_SHRINK_MAX = 100;
+    public const uint INCOMPLETE_REFRESH_SHRINK_MAX = HeaderListPolicy.SHRINK_SLOP;
 
     public static bool is_force_refresh_timeout (uint timeout_seconds) {
         return timeout_seconds == REFRESH_INFO_FORCE

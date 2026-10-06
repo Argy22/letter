@@ -1,0 +1,170 @@
+void main () {
+    var google = Mail.AccountKind.GOOGLE;
+    var important = folder ("Important", "[Gmail]/Important").kind;
+    var italiani = folder ("Importanti", "[Gmail]/Importanti").kind;
+    var inbox = folder ("Inbox", "INBOX").kind;
+    var archive = folder ("Archive", "Archive").kind;
+    var starred = folder ("Starred", "[Gmail]/Starred").kind;
+    expect (important == Mail.FolderKind.IMPORTANT, "Gmail Important kind");
+    expect (italiani == Mail.FolderKind.IMPORTANT, "Gmail Importanti kind");
+    expect (archive == Mail.FolderKind.ARCHIVE, "Archive kind");
+
+    expect (
+        Mail.HeaderListPolicy.trust_gmail_important_refresh (google, important, true),
+        "finished Gmail Important is trusted"
+    );
+    expect (
+        Mail.HeaderListPolicy.trust_gmail_important_refresh (google, italiani, true),
+        "finished Gmail Importanti is trusted"
+    );
+    expect (
+        !Mail.HeaderListPolicy.trust_gmail_important_refresh (google, important, false),
+        "unfinished Gmail Important is not trusted"
+    );
+    expect (
+        !Mail.HeaderListPolicy.trust_gmail_important_refresh (google, inbox, true),
+        "Gmail Inbox is not trusted"
+    );
+    expect (
+        !Mail.HeaderListPolicy.trust_gmail_important_refresh (google, archive, true),
+        "Gmail Archive is not trusted"
+    );
+    expect (
+        !Mail.HeaderListPolicy.trust_gmail_important_refresh (google, starred, true),
+        "Gmail Starred is not trusted"
+    );
+    foreach (var kind in new Mail.AccountKind[] {
+        Mail.AccountKind.MICROSOFT,
+        Mail.AccountKind.EXCHANGE,
+        Mail.AccountKind.IMAP,
+        Mail.AccountKind.LOCAL,
+        Mail.AccountKind.OTHER,
+    }) {
+        expect (
+            !Mail.HeaderListPolicy.trust_gmail_important_refresh (kind, important, true),
+            "non-Gmail Important is not trusted"
+        );
+    }
+
+    /* Drop of 100 or less never reaches the shrink decision. */
+    expect (
+        !(7700 + Mail.HeaderListPolicy.SHRINK_SLOP < 7773),
+        "small Important drop stays outside the shrink guard"
+    );
+    expect (
+        3 + Mail.HeaderListPolicy.SHRINK_SLOP < 7773,
+        "large Important drop is catastrophic"
+    );
+
+    string reason;
+    expect (
+        !Mail.HeaderListPolicy.keep_prior_on_shrink (
+            google, important, 7773, 3, true, true, true, out reason
+        ) && reason == "complete Important",
+        "finished Gmail Important replaces a large list"
+    );
+    expect (
+        Mail.HeaderListPolicy.keep_prior_on_shrink (
+            google, important, 7773, 3, true, false, false, out reason
+        ) && reason == "incomplete refresh",
+        "interrupted Gmail Important keeps the list"
+    );
+    expect (
+        Mail.HeaderListPolicy.keep_prior_on_shrink (
+            google, important, 7773, 3, true, true, false, out reason
+        ) && reason == "large-folder refuse shrink",
+        "skipped Gmail Important refresh keeps the list"
+    );
+    expect (
+        Mail.HeaderListPolicy.keep_prior_on_shrink (
+            google, important, 7773, 3, false, true, false, out reason
+        ) && reason == "large-folder local refuse shrink",
+        "local Important summary keeps the list"
+    );
+    expect (
+        Mail.HeaderListPolicy.keep_prior_on_shrink (
+            Mail.AccountKind.MICROSOFT, important, 7773, 3, true, true, true, out reason
+        ) && reason == "large-folder refuse shrink",
+        "Microsoft Important keeps a large list"
+    );
+    expect (
+        Mail.HeaderListPolicy.keep_prior_on_shrink (
+            google, archive, 7773, 3, true, true, true, out reason
+        ) && reason == "large-folder refuse shrink",
+        "finished Archive keeps a large list"
+    );
+    expect (
+        Mail.HeaderListPolicy.keep_prior_on_shrink (
+            google, inbox, 7773, 3, true, true, true, out reason
+        ) && reason == "large-folder refuse shrink",
+        "finished Inbox keeps a large list"
+    );
+    expect (
+        !Mail.HeaderListPolicy.keep_prior_on_shrink (
+            google, archive, 7773, 0, true, true, true, out reason
+        ) && reason == "complete empty",
+        "a finished empty Archive is accepted"
+    );
+    expect (
+        !Mail.HeaderListPolicy.keep_prior_on_shrink (
+            google, important, 200, 40, true, true, true, out reason
+        ) && reason == "complete Important",
+        "a finished small Gmail Important list still replaces"
+    );
+    expect (
+        !Mail.HeaderListPolicy.keep_prior_on_shrink (
+            google, inbox, 200, 40, true, true, true, out reason
+        ) && reason == "small-folder trust shrink",
+        "a small Inbox shrink is trusted"
+    );
+
+    expect (
+        Mail.HeaderListPolicy.ram_cache_refuses_shrink (7773, 3, 7773, 500, 500, false),
+        "RAM keeps a large shrink"
+    );
+    expect (
+        !Mail.HeaderListPolicy.ram_cache_refuses_shrink (7773, 3, 7773, 500, 500, true),
+        "RAM accepts a trusted shrink"
+    );
+    expect (
+        !Mail.HeaderListPolicy.ram_cache_refuses_shrink (7773, 7500, 7773, 500, 500, false),
+        "RAM allows a shrink inside the gap"
+    );
+    expect (
+        Mail.HeaderListPolicy.ram_cache_refuses_shrink (7773, 7000, 0, 500, 500, false),
+        "RAM keeps a shrink when the high-water is unknown"
+    );
+    expect (
+        !Mail.HeaderListPolicy.ram_cache_refuses_shrink (100, 1, 100, 500, 500, false),
+        "RAM does not guard a small list"
+    );
+
+    expect (
+        Mail.HeaderListPolicy.disk_cache_refuses_shrink (7773, 3, false),
+        "disk keeps a large shrink"
+    );
+    expect (
+        !Mail.HeaderListPolicy.disk_cache_refuses_shrink (7773, 3, true),
+        "disk accepts a trusted shrink"
+    );
+    expect (
+        !Mail.HeaderListPolicy.disk_cache_refuses_shrink (7773, 0, false),
+        "disk still accepts an explicit empty list"
+    );
+    expect (
+        !Mail.HeaderListPolicy.disk_cache_refuses_shrink (7773, 7500, false),
+        "disk allows a shrink inside the gap"
+    );
+}
+
+Mail.Folder folder (string name, string full_name) {
+    return new Mail.Folder () {
+        name = name,
+        full_name = full_name,
+    };
+}
+
+void expect (bool cond, string message) {
+    if (!cond)
+        error ("%s", message);
+}

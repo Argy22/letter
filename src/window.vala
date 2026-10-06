@@ -914,7 +914,8 @@ public class Mail.Window : Adw.ApplicationWindow {
         GenericArray<Message> messages,
         HashTable<string, uint8>? known_uids = null,
         bool persist_disk = true,
-        bool accept_empty = false
+        bool accept_empty = false,
+        bool accept_server_shrink = false
     ) {
         var key = message_cache_key (account, folder);
         var previous = this.message_cache.get (key);
@@ -929,23 +930,37 @@ public class Mail.Window : Adw.ApplicationWindow {
         /* Always drop locally-hidden (archived/moved pending flush) so Camel
          * summaries and disk header caches cannot resurrect them. */
         var visible = visible_messages (account, folder, messages);
-        /* Scale-based shrink guard (any folder that already has a large Letter
-         * list / disk index / high-water). Kind/name do not gate this. */
+        /* Scale-based shrink guard. accept_server_shrink is a finished Gmail
+         * Important refresh: that shorter list is the label, so it replaces
+         * the cache. Every other large folder still keeps the prior list. */
         if (previous != null
-            && previous.length >= MailSession.HEADER_LIST_LARGE
-            && visible.length + LARGE_HEADER_GAP < previous.length) {
-            var water = header_high_water (account, folder);
-            if (water == 0 || visible.length + LARGE_HEADER_GAP < water) {
-                var kept = previous.length;
-                visible = merge_header_lists_keep (previous, visible);
-                Utils.sync_log (
-                    "RAM header cache skip shrink “%s” (keep %u, reject %u)".printf (
-                        folder.name,
-                        kept,
-                        messages.length
-                    )
-                );
-            }
+            && HeaderListPolicy.ram_cache_refuses_shrink (
+                previous.length,
+                visible.length,
+                header_high_water (account, folder),
+                MailSession.HEADER_LIST_LARGE,
+                (uint) LARGE_HEADER_GAP,
+                accept_server_shrink
+            )) {
+            var kept = previous.length;
+            visible = merge_header_lists_keep (previous, visible);
+            Utils.sync_log (
+                "RAM header cache skip shrink “%s” (keep %u, reject %u)".printf (
+                    folder.name,
+                    kept,
+                    messages.length
+                )
+            );
+        } else if (accept_server_shrink
+            && previous != null
+            && visible.length < previous.length) {
+            Utils.sync_log (
+                "header cache accept shrink “%s” (%u ← %u)".printf (
+                    folder.name,
+                    visible.length,
+                    previous.length
+                )
+            );
         }
         /* Tip-merge / local-archive appends land at the end; keep newest-first
          * so Archive (and every large list) is not scrolled “alla rinfusa”. */
@@ -981,6 +996,10 @@ public class Mail.Window : Adw.ApplicationWindow {
                 /* Write now. A debounced save of the previous list, or a
                  * click before the 1.5s timer, would put the old index back. */
                 persist_empty_header_list_now (account, folder);
+            } else if (accept_server_shrink) {
+                /* The shorter Important list is the label. Write it and the
+                 * high-water now, or the next open reloads the old index. */
+                persist_trusted_header_list_now (account, folder, visible);
             } else {
                 /* Never overwrite a larger on-disk header list with a Camel/Graph
                  * partial — that dropped Archive from ~6k back to ~2.7k across
@@ -1145,6 +1164,30 @@ public class Mail.Window : Adw.ApplicationWindow {
             folder.name,
             new GenericArray<Message> ()
         );
+    }
+
+    /* Finished Gmail Important refresh. Cancels a pending save of the longer
+     * list and lowers the high-water to the list just accepted. */
+    private void persist_trusted_header_list_now (
+        Account account,
+        Folder folder,
+        GenericArray<Message> messages
+    ) {
+        var key = message_cache_key (account, folder);
+        var existing = this.header_cache_save_sources.get (key);
+        if (existing != 0) {
+            Source.remove (existing);
+            this.header_cache_save_sources.remove (key);
+        }
+        save_header_list_cache (
+            account.source_uid ?? account.uid,
+            folder.full_name,
+            folder.name,
+            messages,
+            true
+        );
+        this.header_count_high_water.set (key, messages.length);
+        save_header_high_water (account, folder, messages.length);
     }
 
 
@@ -1352,7 +1395,21 @@ public class Mail.Window : Adw.ApplicationWindow {
                 && refresh_timeout_seconds != MailSession.REFRESH_INFO_SKIP
                 && !this.mail_session.last_list_refresh_incomplete
                 && !this.mail_session.last_list_refresh_failed;
-            store_folder_messages (account, folder, messages, known, true, accept_empty);
+            var accept_important = messages.length > 0
+                && HeaderListPolicy.trust_gmail_important_refresh (
+                    account.kind,
+                    folder.kind,
+                    this.mail_session.last_list_refresh_completed
+                );
+            store_folder_messages (
+                account,
+                folder,
+                messages,
+                known,
+                true,
+                accept_empty,
+                accept_important
+            );
             Utils.sync_log ("align “%s” ok %s → %u headers".printf (
                 folder.name,
                 Utils.sync_ms (t0),
@@ -4785,7 +4842,8 @@ public class Mail.Window : Adw.ApplicationWindow {
         string account_uid,
         string folder_full_name,
         string folder_name,
-        GenericArray<Message> messages
+        GenericArray<Message> messages,
+        bool accept_shrink = false
     ) {
         var path = MailSession.header_list_cache_file (account_uid, folder_full_name);
         uint write_n = 0;
@@ -4808,8 +4866,9 @@ public class Mail.Window : Adw.ApplicationWindow {
             } catch (Error e) {
             }
             /* Never replace a larger index with a non-empty partial.
-             * write_n == 0 is allowed (Empty folder / explicit clear). */
-            if (disk_n > 0 && write_n > 0 && write_n + 500 < disk_n) {
+             * write_n == 0 is allowed (Empty folder / explicit clear).
+             * accept_shrink is a finished Gmail Important refresh. */
+            if (HeaderListPolicy.disk_cache_refuses_shrink (disk_n, write_n, accept_shrink)) {
                 Utils.sync_log (
                     "disk header cache refuse shrink “%s” (%u ← disk %u)".printf (
                         folder_name,

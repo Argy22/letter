@@ -31,6 +31,7 @@ mail_sources = files(
   'application.vala',
   'window.vala',
   'account.vala',
+  'header-list-policy.vala',
   'account-row.vala',
   'account-store.vala',
   'mail-session.vala',
