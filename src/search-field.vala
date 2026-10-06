@@ -172,14 +172,17 @@ public class Mail.SearchField : Gtk.Widget {
     construct {
         hexpand = false;
         vexpand = false;
-        valign = Gtk.Align.FILL;
+        valign = Gtk.Align.CENTER;
+        /* Same height at rest and while typing — Adwaita entry metrics otherwise
+         * shrink the empty field below the toolbar buttons. */
+        height_request = 28;
         add_css_class ("search");
         add_css_class ("mail-search-field");
 
         this.bar = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 4) {
             hexpand = true,
-            vexpand = true,
-            valign = Gtk.Align.FILL,
+            vexpand = false,
+            valign = Gtk.Align.CENTER,
         };
         this.bar.set_parent (this);
 
@@ -419,7 +422,10 @@ public class Mail.SearchField : Gtk.Widget {
 
     private Gtk.Widget make_chip_widget (SearchClause clause) {
         var box = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 2) {
+            hexpand = false,
+            vexpand = false,
             valign = Gtk.Align.CENTER,
+            halign = Gtk.Align.START,
         };
         box.add_css_class ("search-chip");
 
@@ -428,15 +434,18 @@ public class Mail.SearchField : Gtk.Widget {
             max_width_chars = 16,
             single_line_mode = true,
             use_markup = false,
+            valign = Gtk.Align.CENTER,
         };
         var close = new Gtk.Button.from_icon_name ("window-close-symbolic") {
             valign = Gtk.Align.CENTER,
             can_focus = false,
             focusable = false,
+            has_frame = false,
             tooltip_text = _("Remove"),
         };
         close.add_css_class ("flat");
         close.add_css_class ("search-chip-close");
+        close.add_css_class ("dim-label");
         close.clicked.connect (() => {
             for (uint i = 0; i < this.chips.length; i++) {
                 if (this.chips[i].clause == clause || this.chips[i].widget == box) {

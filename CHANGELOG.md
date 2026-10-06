@@ -20,6 +20,11 @@ refactors unless they affect behaviour.
 ## [Unreleased](https://github.com/stalvatero/letter/compare/v1.0.0...HEAD)
 
 
+### Changed
+
+- Enhance UI consistency and compactness across the application. Improved the layout of the account rail, window headers, and search fields for better coherence. 
+- Adjusted styles for toolbar buttons and search components to maintain uniform height and spacing.
+
 ### Fixed
 
 - Folder, message, and conversation rows are released when they leave the
@@ -31,6 +36,8 @@ refactors unless they affect behaviour.
 - After a Microsoft 365 move, the old item id is dropped from the destination
   folder. Opening a leftover row opens the copy that arrived with the move,
   instead of saying the message is still syncing.
+- Selected account rows no longer cover the separator next to the account
+  pane.
 
 
 ## [1.0.0](https://github.com/stalvatero/letter/compare/v1.0.0-rc.5...v1.0.0) - 2026-10-05

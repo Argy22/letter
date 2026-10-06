@@ -35,6 +35,8 @@ public class Mail.Window : Adw.ApplicationWindow {
     [GtkChild]
     private unowned Gtk.Paned content_split;
     [GtkChild]
+    private unowned Adw.HeaderBar folder_header;
+    [GtkChild]
     private unowned Gtk.ToggleButton sidebar_button;
     [GtkChild]
     private unowned Adw.WindowTitle folder_title;
@@ -42,6 +44,8 @@ public class Mail.Window : Adw.ApplicationWindow {
     private unowned Adw.Bin folder_bin;
     [GtkChild]
     private unowned Adw.StatusPage no_folders_page;
+    [GtkChild]
+    private unowned Adw.HeaderBar conversation_header;
     [GtkChild]
     private unowned Adw.WindowTitle conversation_title;
     [GtkChild]
@@ -300,6 +304,7 @@ public class Mail.Window : Adw.ApplicationWindow {
         this.collapsed_folders = new HashTable<string, uint8> (str_hash, str_equal);
         this.account_header_sizes = new Gtk.SizeGroup (Gtk.SizeGroupMode.VERTICAL);
         this.account_row_sizes = new Gtk.SizeGroup (Gtk.SizeGroupMode.VERTICAL);
+        sync_toolbar_header_sizes ();
         foreach (var key in this.settings.get_strv ("collapsed-folders")) {
             if (key.length > 0)
                 this.collapsed_folders.set (key, 1);
@@ -2822,9 +2827,7 @@ public class Mail.Window : Adw.ApplicationWindow {
     }
 
     private void sync_account_row_sizes () {
-        this.account_header_sizes = new Gtk.SizeGroup (Gtk.SizeGroupMode.VERTICAL);
-        this.account_header_sizes.add_widget (this.account_header);
-        this.account_header_sizes.add_widget (this.account_rail_add_slot);
+        sync_toolbar_header_sizes ();
 
         this.account_row_sizes = new Gtk.SizeGroup (Gtk.SizeGroupMode.VERTICAL);
         Gtk.Widget? rail = this.account_rail_list.get_first_child ();
@@ -2833,6 +2836,15 @@ public class Mail.Window : Adw.ApplicationWindow {
             this.account_row_sizes.add_widget (rail);
             rail = rail.get_next_sibling ();
         }
+    }
+
+    /* One continuous header height: rail +, accounts, folders, messages. */
+    private void sync_toolbar_header_sizes () {
+        this.account_header_sizes = new Gtk.SizeGroup (Gtk.SizeGroupMode.VERTICAL);
+        this.account_header_sizes.add_widget (this.account_header);
+        this.account_header_sizes.add_widget (this.account_rail_add_slot);
+        this.account_header_sizes.add_widget (this.folder_header);
+        this.account_header_sizes.add_widget (this.conversation_header);
     }
 
     private void apply_account_sidebar (bool expanded) {

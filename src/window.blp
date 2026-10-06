@@ -150,6 +150,10 @@ template $MailWindow: Adw.ApplicationWindow {
             show-start-title-buttons: false;
             show-end-title-buttons: false;
 
+            styles [
+              "letter-toolbar",
+            ]
+
             title-widget: Adw.WindowTitle {
               title: _("Online Accounts");
             };
@@ -208,9 +212,13 @@ template $MailWindow: Adw.ApplicationWindow {
           width-request: 200;
 
           [top]
-          Adw.HeaderBar {
+          Adw.HeaderBar folder_header {
             show-start-title-buttons: false;
             show-end-title-buttons: false;
+
+            styles [
+              "letter-toolbar",
+            ]
 
             [start]
             ToggleButton sidebar_button {
@@ -267,7 +275,11 @@ template $MailWindow: Adw.ApplicationWindow {
 
         end-child: Adw.ToolbarView {
           [top]
-          Adw.HeaderBar {
+          Adw.HeaderBar conversation_header {
+            styles [
+              "letter-toolbar",
+            ]
+
             [start]
             Button compose_button {
               tooltip-text: _("New Message");
@@ -280,7 +292,7 @@ template $MailWindow: Adw.ApplicationWindow {
               ]
 
               Box {
-                spacing: 6;
+                spacing: 4;
                 valign: center;
 
                 Image {
@@ -318,7 +330,7 @@ template $MailWindow: Adw.ApplicationWindow {
               placeholder-text: _("Search");
               width-request: 220;
               hexpand: true;
-              valign: fill;
+              valign: center;
             }
 
             title-widget: Adw.WindowTitle conversation_title {
@@ -337,8 +349,8 @@ template $MailWindow: Adw.ApplicationWindow {
             Adw.Spinner conversation_sync_spinner {
               visible: false;
               tooltip-text: _("Updating…");
-              width-request: 18;
-              height-request: 18;
+              width-request: 16;
+              height-request: 16;
 
               styles [
                 "sync-spinner",
