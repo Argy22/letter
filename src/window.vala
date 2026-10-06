@@ -19,6 +19,8 @@ public class Mail.Window : Adw.ApplicationWindow {
     [GtkChild]
     private unowned Gtk.Box account_rail;
     [GtkChild]
+    private unowned Gtk.Box account_rail_add_slot;
+    [GtkChild]
     private unowned Gtk.Button account_rail_add;
     [GtkChild]
     private unowned Gtk.Box account_rail_list;
@@ -2822,7 +2824,7 @@ public class Mail.Window : Adw.ApplicationWindow {
     private void sync_account_row_sizes () {
         this.account_header_sizes = new Gtk.SizeGroup (Gtk.SizeGroupMode.VERTICAL);
         this.account_header_sizes.add_widget (this.account_header);
-        this.account_header_sizes.add_widget (this.account_rail_add);
+        this.account_header_sizes.add_widget (this.account_rail_add_slot);
 
         this.account_row_sizes = new Gtk.SizeGroup (Gtk.SizeGroupMode.VERTICAL);
         Gtk.Widget? rail = this.account_rail_list.get_first_child ();
