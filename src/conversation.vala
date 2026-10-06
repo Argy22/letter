@@ -740,6 +740,9 @@ private class Mail.ThreadUnion {
 
 public class Mail.ThreadRow : Gtk.ListBoxRow {
     public Message message { get; private set; }
+    /* The conversation this row was built for. The row owns it; the
+     * conversation does not own the row. */
+    public Conversation? context_conversation { get; set; }
     public signal void context_pressed (double x, double y);
 
     private Gtk.Image kind_icon;
@@ -807,12 +810,16 @@ public class Mail.ThreadRow : Gtk.ListBoxRow {
         var click = new Gtk.GestureClick () {
             button = Gdk.BUTTON_SECONDARY,
         };
-        click.pressed.connect ((n, x, y) => {
-            context_pressed (x, y);
-            click.set_state (Gtk.EventSequenceState.CLAIMED);
-        });
+        /* A method, not a lambda. A closure holding the gesture and the row
+         * would keep every replaced thread row alive. */
+        click.pressed.connect (on_secondary_pressed);
         add_controller (click);
         update ();
+    }
+
+    private void on_secondary_pressed (Gtk.GestureClick click, int n_press, double x, double y) {
+        context_pressed (x, y);
+        click.set_state (Gtk.EventSequenceState.CLAIMED);
     }
 
     public void update () {

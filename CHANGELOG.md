@@ -20,6 +20,12 @@ refactors unless they affect behaviour.
 ## [Unreleased](https://github.com/stalvatero/letter/compare/v1.0.0...HEAD)
 
 
+### Fixed
+
+- Folder, message, and conversation rows are released when they leave the
+  list. Opening many conversations no longer keeps those rows in memory.
+
+
 ## [1.0.0](https://github.com/stalvatero/letter/compare/v1.0.0-rc.5...v1.0.0) - 2026-10-05
 
 

@@ -5601,17 +5601,13 @@ public class Mail.Window : Adw.ApplicationWindow {
             return;
 
         var row = new MessageRow ();
-        row.mark_read_clicked.connect (() => mark_row_read (row));
+        /* Methods, not lambdas. A closure capturing the row (and its gesture)
+         * would keep every discarded list row alive. */
+        row.mark_read_clicked.connect (mark_row_read);
         var click = new Gtk.GestureClick () {
             button = Gdk.BUTTON_SECONDARY,
         };
-        click.pressed.connect ((n, x, y) => {
-            if (!this.message_selection.is_selected (item.position))
-                this.message_selection.select_item (item.position, true);
-            var conversation = item.item as Conversation ?? row.conversation;
-            popup_message_menu (row, x, y, conversation, null);
-            click.set_state (Gtk.EventSequenceState.CLAIMED);
-        });
+        click.pressed.connect (on_message_secondary_pressed);
         row.add_controller (click);
         item.child = row;
     }
@@ -5630,7 +5626,25 @@ public class Mail.Window : Adw.ApplicationWindow {
     private void on_message_item_unbind (Object object) {
         var item = object as Gtk.ListItem;
         var row = item != null ? item.child as MessageRow : null;
-        row?.unbind ();
+        if (row != null) {
+            row.list_position = Gtk.INVALID_LIST_POSITION;
+            row.unbind ();
+        }
+    }
+
+    private void on_message_secondary_pressed (Gtk.GestureClick click, int n, double x, double y) {
+        unowned MessageRow? row = click.widget as MessageRow;
+        if (row == null)
+            return;
+        /* This call may recycle the row. The extra ref lasts until return. */
+        row.ref ();
+        var conversation = row.conversation;
+        var position = row.list_position;
+        click.set_state (Gtk.EventSequenceState.CLAIMED);
+        if (position != Gtk.INVALID_LIST_POSITION && !this.message_selection.is_selected (position))
+            this.message_selection.select_item (position, true);
+        popup_message_menu (row, x, y, conversation, null);
+        row.unref ();
     }
 
     private uint selected_count () {
@@ -8531,8 +8545,10 @@ public class Mail.Window : Adw.ApplicationWindow {
     }
 
     private void connect_folder_row (FolderRow row) {
-        row.context_pressed.connect ((x, y) => popup_folder_menu (row, x, y));
-        row.expander_toggled.connect (() => toggle_folder_collapsed (row));
+        /* The row is the signal sender. A lambda capturing it would keep the
+         * row alive after the folder list is rebuilt. */
+        row.context_pressed.connect (popup_folder_menu);
+        row.expander_toggled.connect (toggle_folder_collapsed);
     }
 
     private bool on_folder_key_pressed (uint keyval) {
@@ -8661,31 +8677,47 @@ public class Mail.Window : Adw.ApplicationWindow {
     }
 
     private void connect_thread_context (ThreadRow row, Conversation conversation) {
+        row.context_conversation = conversation;
         var open_click = new Gtk.GestureClick () {
             button = Gdk.BUTTON_PRIMARY,
         };
         open_click.set_propagation_phase (Gtk.PropagationPhase.CAPTURE);
-        open_click.pressed.connect ((n) => {
-            if (n != 2)
-                return;
-            if (!row.is_selected ()) {
-                this.thread_list.select_row (row);
-                on_thread_row_selected (row);
-            }
-            if (!row.message.is_placeholder)
-                open_message_window.begin (row.message);
-            open_click.set_state (Gtk.EventSequenceState.CLAIMED);
-        });
+        open_click.pressed.connect (on_thread_primary_pressed);
         row.add_controller (open_click);
-        row.context_pressed.connect ((x, y) => {
-            if (!row.is_selected ())
-                this.thread_list.select_row (row);
+        row.context_pressed.connect (on_thread_context_pressed);
+    }
+
+    private void on_thread_primary_pressed (Gtk.GestureClick click, int n, double x, double y) {
+        if (n != 2)
+            return;
+        unowned ThreadRow? row = click.widget as ThreadRow;
+        if (row == null)
+            return;
+        row.ref ();
+        var message = row.message;
+        var selected = row.is_selected ();
+        click.set_state (Gtk.EventSequenceState.CLAIMED);
+        if (!selected) {
+            this.thread_list.select_row (row);
             on_thread_row_selected (row);
-            if (is_thread_bulk ())
-                popup_bulk_message_menu (row, x, y);
-            else
-                popup_message_menu (row, x, y, conversation, row.message);
-        });
+        }
+        if (!message.is_placeholder)
+            open_message_window.begin (message);
+        row.unref ();
+    }
+
+    private void on_thread_context_pressed (ThreadRow row, double x, double y) {
+        row.ref ();
+        var message = row.message;
+        var conversation = row.context_conversation;
+        if (!row.is_selected ())
+            this.thread_list.select_row (row);
+        on_thread_row_selected (row);
+        if (is_thread_bulk ())
+            popup_bulk_message_menu (row, x, y);
+        else
+            popup_message_menu (row, x, y, conversation, message);
+        row.unref ();
     }
 
     private void popup_folder_menu (FolderRow row, double x, double y) {
