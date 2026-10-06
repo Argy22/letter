@@ -155,6 +155,30 @@ void main () {
         !Mail.HeaderListPolicy.disk_cache_refuses_shrink (7773, 7500, false),
         "disk allows a shrink inside the gap"
     );
+
+    var three = messages (3);
+    var retired = new HashTable<string, uint8> (str_hash, str_equal);
+    retired.set ("1", 1);
+    var dropped = Mail.HeaderListPolicy.without_retired (three, retired);
+    expect (dropped != three, "retired drop returns a new array");
+    expect (dropped.length == 2, "retired drop removes matching uids");
+    expect (dropped[0].uid == "0" && dropped[1].uid == "2", "retired drop keeps the others");
+    var empty = new HashTable<string, uint8> (str_hash, str_equal);
+    expect (
+        Mail.HeaderListPolicy.without_retired (three, empty) == three,
+        "empty retired table returns the same array"
+    );
+}
+
+GenericArray<Mail.Message> messages (uint n) {
+    var list = new GenericArray<Mail.Message> ();
+    for (uint i = 0; i < n; i++) {
+        list.add (new Mail.Message () {
+            uid = i.to_string (),
+            subject = "s",
+        });
+    }
+    return list;
 }
 
 Mail.Folder folder (string name, string full_name) {

@@ -1210,6 +1210,9 @@ msgstr ""
 "Questo messaggio è ancora in sincronizzazione con il server. Riprova tra un "
 "momento."
 
+msgid "This copy is no longer on the server."
+msgstr "Questa copia non è più sul server."
+
 #: src/mail-session.vala:2261 src/mail-session.vala:2298
 msgid "Message could not be opened."
 msgstr "Il messaggio non può essere aperto."

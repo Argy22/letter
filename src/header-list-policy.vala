@@ -76,6 +76,35 @@ public class Mail.HeaderListPolicy {
         return true;
     }
 
+    /* Same array when nothing is retired, so an unchanged folder stays unchanged. */
+    public static GenericArray<Message> without_retired (
+        GenericArray<Message> messages,
+        HashTable<string, uint8> retired
+    ) {
+        if (retired.size () == 0)
+            return messages;
+
+        var any = false;
+        for (uint i = 0; i < messages.length; i++) {
+            var uid = messages[i].uid;
+            if (uid != null && uid.length > 0 && retired.contains (uid)) {
+                any = true;
+                break;
+            }
+        }
+        if (!any)
+            return messages;
+
+        var kept = new GenericArray<Message> ();
+        for (uint i = 0; i < messages.length; i++) {
+            var uid = messages[i].uid;
+            if (uid != null && uid.length > 0 && retired.contains (uid))
+                continue;
+            kept.add (messages[i]);
+        }
+        return kept;
+    }
+
     public static bool disk_cache_refuses_shrink (
         uint disk_n,
         uint write_n,

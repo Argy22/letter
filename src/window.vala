@@ -962,6 +962,10 @@ public class Mail.Window : Adw.ApplicationWindow {
                 )
             );
         }
+        var before_retired = visible.length;
+        if (this.mail_session != null)
+            visible = this.mail_session.without_retired_moves (account, folder, visible);
+        var retired_drop = visible.length < before_retired;
         /* Tip-merge / local-archive appends land at the end; keep newest-first
          * so Archive (and every large list) is not scrolled “alla rinfusa”. */
         sort_messages_by_date (visible);
@@ -991,40 +995,39 @@ public class Mail.Window : Adw.ApplicationWindow {
             notify_new_arrivals (account, folder, visible, known);
         if (accept_empty && visible.length == 0)
             clear_header_high_water (account, folder);
-        if (persist_disk) {
-            if (accept_empty && visible.length == 0) {
-                /* Write now. A debounced save of the previous list, or a
-                 * click before the 1.5s timer, would put the old index back. */
-                persist_empty_header_list_now (account, folder);
-            } else if (accept_server_shrink) {
-                /* The shorter Important list is the label. Write it and the
-                 * high-water now, or the next open reloads the old index. */
-                persist_trusted_header_list_now (account, folder, visible);
+        if (persist_disk && accept_empty && visible.length == 0) {
+            /* Write now. A debounced save of the previous list, or a
+             * click before the 1.5s timer, would put the old index back. */
+            persist_empty_header_list_now (account, folder);
+        } else if (retired_drop || (persist_disk && accept_server_shrink)) {
+            /* Retired move ids, and a finished Gmail Important refresh, are
+             * real removals. Write them now so the next open cannot put the
+             * old rows back. */
+            persist_trusted_header_list_now (account, folder, visible);
+        } else if (persist_disk) {
+            /* Never overwrite a larger on-disk header list with a Camel/Graph
+             * partial — that dropped Archive from ~6k back to ~2.7k across
+             * restarts while body cache (GiB) still looked full. */
+            var prev_n = previous != null ? previous.length : 0;
+            var disk_n = disk_header_list_count (account, folder);
+            var floor = uint.max (prev_n, disk_n);
+            var water = header_high_water (account, folder);
+            var catastrophic = floor >= MailSession.HEADER_LIST_LARGE
+                && visible.length + LARGE_HEADER_GAP < floor
+                && (water == 0 || visible.length + LARGE_HEADER_GAP < water);
+            if (catastrophic) {
+                Utils.sync_log (
+                    "disk header cache skip shrink “%s” (%u ← floor %u ram %u disk %u, watermark %u)".printf (
+                        folder.name,
+                        visible.length,
+                        floor,
+                        prev_n,
+                        disk_n,
+                        water
+                    )
+                );
             } else {
-                /* Never overwrite a larger on-disk header list with a Camel/Graph
-                 * partial — that dropped Archive from ~6k back to ~2.7k across
-                 * restarts while body cache (GiB) still looked full. */
-                var prev_n = previous != null ? previous.length : 0;
-                var disk_n = disk_header_list_count (account, folder);
-                var floor = uint.max (prev_n, disk_n);
-                var water = header_high_water (account, folder);
-                var catastrophic = floor >= MailSession.HEADER_LIST_LARGE
-                    && visible.length + LARGE_HEADER_GAP < floor
-                    && (water == 0 || visible.length + LARGE_HEADER_GAP < water);
-                if (catastrophic) {
-                    Utils.sync_log (
-                        "disk header cache skip shrink “%s” (%u ← floor %u ram %u disk %u, watermark %u)".printf (
-                            folder.name,
-                            visible.length,
-                            floor,
-                            prev_n,
-                            disk_n,
-                            water
-                        )
-                    );
-                } else {
-                    queue_header_list_cache_save (account, folder, visible);
-                }
+                queue_header_list_cache_save (account, folder, visible);
             }
         }
         enforce_message_cache_ceiling ();
@@ -6167,6 +6170,8 @@ public class Mail.Window : Adw.ApplicationWindow {
                     var syncing = e.message == _(
                         "This message is still syncing with the server. Try again in a moment."
                     );
+                    if (syncing && yield open_moved_copy (account, folder, message, cancellable))
+                        return;
                     var busy = this.camel_align_busy || this.folder_sync_active
                         || this.startup_sync_active || this.scheduled_sync_active;
                     if (syncing && busy && attempt + 1 < 8) {
@@ -6174,6 +6179,10 @@ public class Mail.Window : Adw.ApplicationWindow {
                         yield;
                         continue;
                     }
+                    if (syncing)
+                        e = new IOError.NOT_FOUND (
+                            _("This copy is no longer on the server.")
+                        );
                     throw e;
                 }
 
@@ -6215,6 +6224,108 @@ public class Mail.Window : Adw.ApplicationWindow {
             if (status_token != 0)
                 hide_sync_status (status_token);
         }
+    }
+
+    /* M365 moves change the item id. The optimistic Archive row keeps the
+     * Inbox id; Graph may later tip the new id without dropping the old one
+     * (large-folder shrink guard). Open the live twin by Message-ID. */
+    private async bool open_moved_copy (
+        Account account,
+        Folder folder,
+        Message ghost,
+        Cancellable cancellable
+    ) {
+        if (ghost.msgid_hash == 0 || this.mail_session == null)
+            return false;
+        var cache = this.message_cache.get (message_cache_key (account, folder));
+        if (cache == null)
+            return false;
+
+        Message? twin = null;
+        for (uint i = 0; i < cache.length; i++) {
+            var candidate = cache[i];
+            if (candidate.uid == null || candidate.uid.length == 0)
+                continue;
+            if (candidate.uid == ghost.uid)
+                continue;
+            if (candidate.msgid_hash != ghost.msgid_hash)
+                continue;
+            twin = candidate;
+            break;
+        }
+        if (twin == null)
+            return false;
+
+        MessageContent? content = null;
+        try {
+            content = yield this.mail_session.load_message (
+                account,
+                folder,
+                twin.uid,
+                cancellable
+            );
+            if (content != null && content.is_unready_shell () && !content.shell_confirmed)
+                content = null;
+        } catch (Error e) {
+            if (Utils.is_cancelled_error (e) || cancellable.is_cancelled ())
+                return false;
+            debug ("Moved copy “%s” uid=%s: %s", folder.name, twin.uid, e.message);
+            return false;
+        }
+        if (content == null || cancellable.is_cancelled () || this.open_message_uid != ghost.uid)
+            return false;
+
+        var want_flag = ghost.flagged;
+        var ghost_uid = ghost.uid;
+        this.mail_session.rekey_body (account, folder, ghost_uid, folder, twin.uid);
+        this.mail_session.retire_moved_uid (account, folder, ghost_uid);
+        remove_from_folder_cache (account, folder, ghost_uid);
+        remove_from_search_results (ghost_uid, folder.full_name);
+        if (folder.total > 0)
+            folder.total--;
+        refresh_folder_badge (folder);
+
+        if (this.open_conversation != null) {
+            this.open_conversation.remove_uid (ghost_uid, folder.full_name);
+            this.open_conversation.add_message (twin);
+            this.open_conversation.refresh ();
+            fill_thread_list (this.open_conversation, twin);
+        }
+
+        if (want_flag && !twin.flagged) {
+            twin.flagged = true;
+            var uids = new GenericArray<string> ();
+            uids.add (twin.uid);
+            this.mail_session.set_uids_flagged.begin (
+                account,
+                folder,
+                uids,
+                true,
+                (obj, res) => {
+                    try {
+                        this.mail_session.set_uids_flagged.end (res);
+                    } catch (Error e) {
+                        debug ("Could not copy bookmark to moved id: %s", e.message);
+                    }
+                }
+            );
+        }
+
+        var after = this.message_cache.get (message_cache_key (account, folder));
+        if (after != null)
+            persist_trusted_header_list_now (account, folder, after);
+
+        this.open_message = twin;
+        this.open_message_uid = twin.uid;
+        this.open_content = content;
+        this.message_reader.show_content (content, twin.outgoing);
+        update_message_actions ();
+        schedule_mark_seen (account, folder, twin);
+        prefetch_thread_bodies.begin (twin);
+        Utils.sync_log (
+            "open moved copy “%s” %s → %s".printf (folder.name, ghost_uid, twin.uid)
+        );
+        return true;
     }
 
     private async void prefetch_thread_bodies (Message opened) {
@@ -7802,17 +7913,21 @@ public class Mail.Window : Adw.ApplicationWindow {
         var message = item.message;
         var from = item.from;
         var uid = item.uid;
+        /* After a Graph flush the Message may already carry the new id. */
+        var current_uid = message.uid;
         var unseen = !message.seen;
 
         this.hidden_uids.remove (hide_key (account, from, uid));
+        if (this.mail_session != null)
+            this.mail_session.unretire_moved_uid (account, destination, uid);
+        this.mail_session.rekey_body (account, destination, current_uid, from, uid);
         Conversation.apply_folder (message, from, uid);
         message.folder_name = item.folder_name;
         message.outgoing = item.outgoing;
         message.local_only = item.local_only;
         if (item.folder_full_name != null)
             message.folder_full_name = item.folder_full_name;
-        this.mail_session.rekey_body (account, destination, message.uid, from, uid);
-        remove_from_folder_cache (account, destination, message.uid);
+        remove_from_folder_cache (account, destination, current_uid);
         add_to_folder_cache (account, from, message);
         from.total++;
         if (unseen)

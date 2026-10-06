@@ -28,6 +28,9 @@ refactors unless they affect behaviour.
 - Gmail’s Important folder drops messages that are no longer important,
   including when that folder is large. Those messages no longer stay marked
   important in other folders. Reported by [Illya Yalovyy](https://github.com/IllyaYalovyy).
+- After a Microsoft 365 move, the old item id is dropped from the destination
+  folder. Opening a leftover row opens the copy that arrived with the move,
+  instead of saying the message is still syncing.
 
 
 ## [1.0.0](https://github.com/stalvatero/letter/compare/v1.0.0-rc.5...v1.0.0) - 2026-10-05
